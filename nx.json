@@ -1,5 +1,8 @@
 {
   "$schema": "./node_modules/nx/schemas/nx-schema.json",
   "neverConnectToCloud": true,
-  "analytics": true
+  "analytics": true,
+  "plugins": [
+    "@nx-go/nx-go"
+  ]
 }
