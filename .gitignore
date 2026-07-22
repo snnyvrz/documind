@@ -1,15 +1,8 @@
-# node_modules
-node_modules/
-
-# Nx
-.nx/workspace-data/
-.nx/cache/
-
-# build output
-dist/
+# temporary files
 tmp/
 
-# local env files
+# vscode
+.vscode/
+
+# .env
 .env
-vite.config.*.timestamp*
-vitest.config.*.timestamp*
