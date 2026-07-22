@@ -8,3 +8,6 @@ node_modules/
 # build output
 dist/
 tmp/
+
+# local env files
+.env
