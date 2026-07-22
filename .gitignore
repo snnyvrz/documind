@@ -11,3 +11,5 @@ tmp/
 
 # local env files
 .env
+vite.config.*.timestamp*
+vitest.config.*.timestamp*
