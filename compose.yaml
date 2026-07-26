@@ -1,0 +1,13 @@
+services:
+  api:
+    build:
+      context: ./api
+    ports:
+      - "1323:1323"
+    environment:
+      UPLOAD_DIRECTORY: /var/lib/documind/uploads
+    volumes:
+      - document_uploads:/var/lib/documind/uploads
+
+volumes:
+  document_uploads:
