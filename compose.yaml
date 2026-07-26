@@ -9,5 +9,13 @@ services:
     volumes:
       - document_uploads:/var/lib/documind/uploads
 
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+
 volumes:
   document_uploads:
