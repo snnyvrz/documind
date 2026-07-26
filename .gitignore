@@ -1,6 +1,9 @@
 # temporary files
 tmp/
 
+# uploaded documents
+data/
+
 # vscode
 .vscode/
 

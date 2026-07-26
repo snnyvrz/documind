@@ -5,9 +5,29 @@ services:
     ports:
       - "1323:1323"
     environment:
-      UPLOAD_DIRECTORY: /var/lib/documind/uploads
+      DATABASE_URL: postgres://documind:documind@db:5432/documind?sslmode=disable
+      UPLOAD_DIRECTORY: /data
     volumes:
-      - document_uploads:/var/lib/documind/uploads
+      - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:18-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: documind
+      POSTGRES_USER: documind
+      POSTGRES_PASSWORD: documind
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U documind -d documind"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql
 
   frontend:
     build:
@@ -18,4 +38,4 @@ services:
       - api
 
 volumes:
-  document_uploads:
+  postgres_data:

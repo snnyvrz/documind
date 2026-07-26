@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -11,9 +13,19 @@ import (
 	"testing"
 )
 
+type memoryDocumentStore struct {
+	documents []document
+}
+
+func (s *memoryDocumentStore) Create(_ context.Context, document document) error {
+	s.documents = append(s.documents, document)
+	return nil
+}
+
 func TestUploadPDF(t *testing.T) {
 	uploadDirectory := t.TempDir()
-	server := newServer(uploadDirectory)
+	store := &memoryDocumentStore{}
+	server := newServer(uploadDirectory, store)
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -36,25 +48,35 @@ func TestUploadPDF(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload status = %d, want %d", response.Code, http.StatusCreated)
 	}
-	files, err := os.ReadDir(uploadDirectory)
-	if err != nil {
-		t.Fatalf("read upload directory: %v", err)
+	var responseBody struct {
+		DocumentID string `json:"documentId"`
+		Status     string `json:"status"`
 	}
-	if len(files) != 1 || filepath.Ext(files[0].Name()) != ".pdf" {
-		t.Fatalf("uploaded files = %v, want one PDF", files)
+	if err := json.Unmarshal(response.Body.Bytes(), &responseBody); err != nil {
+		t.Fatalf("decode upload response: %v", err)
 	}
-	saved, err := os.ReadFile(filepath.Join(uploadDirectory, files[0].Name()))
+	if responseBody.DocumentID == "" || responseBody.Status != "uploaded" {
+		t.Fatalf("upload response = %+v, want documentId and uploaded status", responseBody)
+	}
+	saved, err := os.ReadFile(filepath.Join(uploadDirectory, "documents", responseBody.DocumentID, "original.pdf"))
 	if err != nil {
 		t.Fatalf("read uploaded PDF: %v", err)
 	}
 	if !bytes.Equal(saved, []byte("%PDF-1.7\nexample document")) {
 		t.Fatalf("saved PDF content = %q", saved)
 	}
+	if len(store.documents) != 1 {
+		t.Fatalf("saved documents = %d, want 1", len(store.documents))
+	}
+	document := store.documents[0]
+	if document.ID != responseBody.DocumentID || document.OriginalFilename != "document.pdf" || document.StoredPath != filepath.Join("documents", responseBody.DocumentID, "original.pdf") || document.MIMEType != "application/pdf" || document.Size != int64(len("%PDF-1.7\nexample document")) || document.Status != "uploaded" {
+		t.Fatalf("saved metadata = %+v", document)
+	}
 }
 
 func TestUploadRejectsNonPDF(t *testing.T) {
 	uploadDirectory := t.TempDir()
-	server := newServer(uploadDirectory)
+	server := newServer(uploadDirectory, &memoryDocumentStore{})
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)

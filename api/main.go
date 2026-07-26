@@ -18,7 +18,13 @@ func main() {
 		panic("determine upload directory: " + err.Error())
 	}
 
-	e := newServer(uploadDirectory)
+	store, err := openDocumentStore(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		panic("connect to document database: " + err.Error())
+	}
+	defer store.Close()
+
+	e := newServer(uploadDirectory, store)
 
 	if err := e.Start(":1323"); err != nil {
 		e.Logger.Error("failed to start server", "error", err)
@@ -42,7 +48,7 @@ func uploadDirectory() (string, error) {
 	return filepath.Join(dataDirectory, "documind", "uploads"), nil
 }
 
-func newServer(uploadDirectory string) *echo.Echo {
+func newServer(uploadDirectory string, store documentStore) *echo.Echo {
 	e := echo.New()
 
 	e.Use(middleware.RequestLogger())
@@ -52,7 +58,7 @@ func newServer(uploadDirectory string) *echo.Echo {
 		return c.JSON(http.StatusOK, map[string]string{"message": "Hello, World!"})
 	})
 
-	e.POST("/documents", newDocumentHandler(uploadDirectory).Upload)
+	e.POST("/documents", newDocumentHandler(uploadDirectory, store).Upload)
 
 	return e
 }
