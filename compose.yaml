@@ -7,24 +7,57 @@ services:
     environment:
       DATABASE_URL: postgres://documind:documind@db:5432/documind?sslmode=disable
       UPLOAD_DIRECTORY: /data
-      EXTRACTOR_GRPC_URL: extractor:50051
+      DOCUMENT_PROCESSOR_GRPC_URL: document-processor:50051
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
     volumes:
       - ./data:/data
     depends_on:
       db:
         condition: service_healthy
-      extractor:
+      document-processor:
         condition: service_started
 
-  extractor:
+  document-processor:
     build:
-      context: ./extractor
+      context: ./document-processor
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
+      CHUNK_SIZE: ${CHUNK_SIZE:-4000}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-400}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-32}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen2.5:7b}
     expose:
       - "8000"
       - "50051"
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+  ollama:
+    image: ollama/ollama:latest
+    entrypoint: ["/bin/sh", "-c"]
+    environment:
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen2.5:7b}
+    command:
+      - /bin/ollama serve & until /bin/ollama show "$${OLLAMA_EMBEDDING_MODEL}" >/dev/null 2>&1 && /bin/ollama show "$${OLLAMA_CHAT_MODEL}" >/dev/null 2>&1; do /bin/ollama pull "$${OLLAMA_EMBEDDING_MODEL}" || true; /bin/ollama pull "$${OLLAMA_CHAT_MODEL}" || true; sleep 2; done; wait
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'ollama show "$${OLLAMA_EMBEDDING_MODEL}" >/dev/null 2>&1 && ollama show "$${OLLAMA_CHAT_MODEL}" >/dev/null 2>&1',
+        ]
+      interval: 10s
+      timeout: 10s
+      start_period: 15m
+      retries: 60
+    volumes:
+      - ollama_data:/root/.ollama
 
   db:
-    image: postgres:18-alpine
+    image: pgvector/pgvector:pg18
     ports:
       - "5432:5432"
     environment:
@@ -49,3 +82,4 @@ services:
 
 volumes:
   postgres_data:
+  ollama_data:

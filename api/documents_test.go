@@ -33,7 +33,7 @@ func (s *memoryDocumentStore) ClaimNext(_ context.Context) (*document, error) {
 	return nil, gorm.ErrRecordNotFound
 }
 
-func (s *memoryDocumentStore) Complete(_ context.Context, id, text string) error {
+func (s *memoryDocumentStore) Complete(_ context.Context, id, text string, _ []documentChunk) error {
 	for index := range s.documents {
 		if s.documents[index].ID == id {
 			s.documents[index].Status = "completed"
@@ -62,6 +62,10 @@ func (s *memoryDocumentStore) Find(_ context.Context, id string) (*document, err
 		}
 	}
 	return nil, gorm.ErrRecordNotFound
+}
+
+func (s *memoryDocumentStore) SearchChunks(_ context.Context, _ string, _ string, _ int) ([]documentChunk, error) {
+	return nil, nil
 }
 
 func TestUploadPDF(t *testing.T) {

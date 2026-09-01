@@ -3,13 +3,18 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
+	extractorpb "api/proto"
 	"github.com/labstack/echo/v5"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 const maxUploadSize = 20 << 20
@@ -96,6 +101,83 @@ func (h *documentHandler) Get(c *echo.Context) error {
 		response["error"] = *document.ErrorMessage
 	}
 	return c.JSON(http.StatusOK, response)
+}
+
+func (h *documentHandler) Ask(c *echo.Context) error {
+	var request struct {
+		Question string `json:"question"`
+	}
+	if err := json.NewDecoder(c.Request().Body).Decode(&request); err != nil || len([]rune(request.Question)) == 0 || len([]rune(request.Question)) > 4000 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "question must contain between 1 and 4000 characters"})
+	}
+	document, err := h.store.Find(context.Background(), c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
+	}
+	if document.Status != "completed" {
+		return c.JSON(http.StatusConflict, map[string]string{"error": "document is not ready for questions"})
+	}
+	connection, err := grpc.NewClient(processorAddress(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "document processor unavailable"})
+	}
+	defer connection.Close()
+	client := extractorpb.NewDocumentProcessorClient(connection)
+	embedding, err := client.EmbedQuestion(c.Request().Context(), &extractorpb.EmbedQuestionRequest{Text: request.Question})
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "could not embed question"})
+	}
+	vector := "["
+	for i, value := range embedding.Embedding {
+		if i > 0 {
+			vector += ","
+		}
+		vector += fmt.Sprintf("%g", value)
+	}
+	vector += "]"
+	contexts, err := h.store.SearchChunks(c.Request().Context(), document.ID, vector, 5)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not search document"})
+	}
+	stream, err := client.AnswerQuestion(c.Request().Context(), &extractorpb.AnswerQuestionRequest{Question: request.Question, Contexts: func() []*extractorpb.AnswerContext {
+		result := make([]*extractorpb.AnswerContext, len(contexts))
+		for i := range contexts {
+			result[i] = &extractorpb.AnswerContext{ChunkIndex: uint32(contexts[i].ChunkIndex), Text: contexts[i].Text}
+		}
+		return result
+	}()})
+	if err != nil {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "could not start answer"})
+	}
+	response := c.Response()
+	response.Header().Set("Content-Type", "text/event-stream")
+	response.Header().Set("Cache-Control", "no-cache")
+	response.Header().Set("Connection", "keep-alive")
+	flusher, canFlush := response.(http.Flusher)
+	for {
+		event, receiveErr := stream.Recv()
+		if receiveErr == io.EOF {
+			break
+		}
+		if receiveErr != nil {
+			return receiveErr
+		}
+		payload, _ := json.Marshal(map[string]string{"text": event.Text})
+		fmt.Fprintf(response, "event: token\ndata: %s\n\n", payload)
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+	sources := make([]map[string]any, len(contexts))
+	for i := range contexts {
+		sources[i] = map[string]any{"chunkIndex": contexts[i].ChunkIndex, "text": contexts[i].Text, "startOffset": contexts[i].StartOffset, "endOffset": contexts[i].EndOffset}
+	}
+	payload, _ := json.Marshal(map[string]any{"sources": sources})
+	fmt.Fprintf(response, "event: sources\ndata: %s\n\nevent: done\ndata: {}\n\n", payload)
+	if canFlush {
+		flusher.Flush()
+	}
+	return nil
 }
 
 func documentID() (string, error) {

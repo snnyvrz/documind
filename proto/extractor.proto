@@ -4,17 +4,56 @@ package extractor;
 
 option go_package = "api/proto;extractorpb";
 
-service TextExtractor {
-  rpc Extract(ExtractRequest) returns (ExtractResponse);
+service DocumentProcessor {
+  rpc Process(ProcessRequest) returns (stream ProcessEvent);
+  rpc EmbedQuestion(EmbedQuestionRequest) returns (EmbedQuestionResponse);
+  rpc AnswerQuestion(AnswerQuestionRequest) returns (stream AnswerEvent);
 }
 
-message ExtractRequest {
+message ProcessRequest {
   string document_id = 1;
   bytes pdf = 2;
 }
 
-message ExtractResponse {
+message ProcessEvent {
+  oneof payload {
+    ProcessMetadata metadata = 1;
+    ChunkBatch chunk_batch = 2;
+  }
+}
+
+message ProcessMetadata {
   string document_id = 1;
   string text = 2;
   uint32 page_count = 3;
+  uint32 chunk_count = 4;
+  uint32 embedding_dimensions = 5;
 }
+
+message ChunkBatch {
+  uint32 batch_index = 1;
+  repeated Chunk chunks = 2;
+}
+
+message Chunk {
+  uint32 index = 1;
+  string text = 2;
+  uint64 start_offset = 3;
+  uint64 end_offset = 4;
+  repeated float embedding = 5;
+}
+
+message EmbedQuestionRequest { string text = 1; }
+message EmbedQuestionResponse {
+  repeated float embedding = 1;
+  uint32 dimensions = 2;
+}
+message AnswerQuestionRequest {
+  string question = 1;
+  repeated AnswerContext contexts = 2;
+}
+message AnswerContext {
+  uint32 chunk_index = 1;
+  string text = 2;
+}
+message AnswerEvent { string text = 1; }

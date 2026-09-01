@@ -1,7 +1,8 @@
-# DocuMind Extractor
+# DocuMind Document Processor
 
-The extractor exposes the PDF text extraction gRPC service on port `50051` and
-the FastAPI health endpoint on port `8000`.
+The document processor extracts PDF text, chunks it, and streams Ollama
+embeddings over gRPC on port `50051`. Its FastAPI health endpoint is on port
+`8000`.
 
 ## Development
 

@@ -23,7 +23,12 @@ export const DocumentUploadForm = () => {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [documentId, setDocumentId] = useState<string | null>(null);
+  const [readyDocumentId, setReadyDocumentId] = useState<string | null>(null);
   const [extractedText, setExtractedText] = useState<string | null>(null);
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [sources, setSources] = useState<Array<{ chunkIndex: number; text: string }>>([]);
+  const [isAsking, setIsAsking] = useState(false);
   const {
     formState: { errors, isSubmitting },
     handleSubmit,
@@ -42,6 +47,7 @@ export const DocumentUploadForm = () => {
       const body = (await response.json()) as { status: string; text?: string; error?: string };
       if (body.status === "completed") {
         setExtractedText(body.text ?? "");
+        setReadyDocumentId(documentId);
         setUploadSuccess("Document processed successfully.");
         setDocumentId(null);
       } else if (body.status === "failed") {
@@ -97,6 +103,7 @@ export const DocumentUploadForm = () => {
       }
       const body = (await response.json()) as { documentId: string };
       setDocumentId(body.documentId);
+      setReadyDocumentId(null);
       setExtractedText(null);
       setUploadSuccess("Document uploaded. Extracting text...");
     } catch (error) {
@@ -105,6 +112,43 @@ export const DocumentUploadForm = () => {
           ? error.message
           : "The document could not be uploaded.",
       );
+    }
+  };
+
+  const askQuestion = async () => {
+    if (!readyDocumentId || !question.trim()) return;
+    setIsAsking(true);
+    setAnswer("");
+    setSources([]);
+    try {
+      const response = await fetch(`/documents/${readyDocumentId}/questions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify({ question }),
+      });
+      if (!response.ok || !response.body) throw new Error("Could not answer the question.");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const next = await reader.read();
+        if (next.done) break;
+        buffer += decoder.decode(next.value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+        for (const value of events) {
+          const data = value.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+          const type = value.split("\n").find((line) => line.startsWith("event: "))?.slice(7);
+          if (!data) continue;
+          const payload = JSON.parse(data) as { text?: string; sources?: Array<{ chunkIndex: number; text: string }> };
+          if (type === "token") setAnswer((current) => current + (payload.text ?? ""));
+          if (type === "sources") setSources(payload.sources ?? []);
+        }
+      }
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "Could not answer the question.");
+    } finally {
+      setIsAsking(false);
     }
   };
 
@@ -182,6 +226,29 @@ export const DocumentUploadForm = () => {
         <pre className="max-h-96 overflow-auto whitespace-pre-wrap border p-4 text-sm">
           {extractedText || "No embedded text found in this PDF."}
         </pre>
+      )}
+
+      {readyDocumentId && (
+        <section className="space-y-4 border-t pt-5">
+          <h3 className="text-lg font-medium">Ask about this document</h3>
+          <div className="flex gap-2">
+            <input
+              value={question}
+              onChange={(event) => setQuestion(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void askQuestion();
+                }
+              }}
+              placeholder="What is this document about?"
+              className="min-w-0 flex-1 border bg-background px-3 py-2 text-sm"
+            />
+            <Button type="button" onClick={() => void askQuestion()} disabled={isAsking || !question.trim()}>{isAsking ? "Answering..." : "Ask"}</Button>
+          </div>
+          {answer && <p className="whitespace-pre-wrap border p-4 text-sm">{answer}</p>}
+          {sources.length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Sources</p>{sources.map((source) => <p key={source.chunkIndex} className="border-l-2 pl-3 text-sm text-muted-foreground">Chunk {source.chunkIndex}: {source.text}</p>)}</div>}
+        </section>
       )}
 
       {document && (

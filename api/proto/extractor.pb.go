@@ -21,7 +21,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type ExtractRequest struct {
+type ProcessRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	DocumentId    string                 `protobuf:"bytes,1,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
 	Pdf           []byte                 `protobuf:"bytes,2,opt,name=pdf,proto3" json:"pdf,omitempty"`
@@ -29,20 +29,20 @@ type ExtractRequest struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ExtractRequest) Reset() {
-	*x = ExtractRequest{}
+func (x *ProcessRequest) Reset() {
+	*x = ProcessRequest{}
 	mi := &file_extractor_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ExtractRequest) String() string {
+func (x *ProcessRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ExtractRequest) ProtoMessage() {}
+func (*ProcessRequest) ProtoMessage() {}
 
-func (x *ExtractRequest) ProtoReflect() protoreflect.Message {
+func (x *ProcessRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_extractor_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -54,48 +54,50 @@ func (x *ExtractRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ExtractRequest.ProtoReflect.Descriptor instead.
-func (*ExtractRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use ProcessRequest.ProtoReflect.Descriptor instead.
+func (*ProcessRequest) Descriptor() ([]byte, []int) {
 	return file_extractor_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *ExtractRequest) GetDocumentId() string {
+func (x *ProcessRequest) GetDocumentId() string {
 	if x != nil {
 		return x.DocumentId
 	}
 	return ""
 }
 
-func (x *ExtractRequest) GetPdf() []byte {
+func (x *ProcessRequest) GetPdf() []byte {
 	if x != nil {
 		return x.Pdf
 	}
 	return nil
 }
 
-type ExtractResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DocumentId    string                 `protobuf:"bytes,1,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
-	Text          string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
-	PageCount     uint32                 `protobuf:"varint,3,opt,name=page_count,json=pageCount,proto3" json:"page_count,omitempty"`
+type ProcessEvent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Payload:
+	//
+	//	*ProcessEvent_Metadata
+	//	*ProcessEvent_ChunkBatch
+	Payload       isProcessEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ExtractResponse) Reset() {
-	*x = ExtractResponse{}
+func (x *ProcessEvent) Reset() {
+	*x = ProcessEvent{}
 	mi := &file_extractor_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ExtractResponse) String() string {
+func (x *ProcessEvent) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ExtractResponse) ProtoMessage() {}
+func (*ProcessEvent) ProtoMessage() {}
 
-func (x *ExtractResponse) ProtoReflect() protoreflect.Message {
+func (x *ProcessEvent) ProtoReflect() protoreflect.Message {
 	mi := &file_extractor_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -107,30 +109,498 @@ func (x *ExtractResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ExtractResponse.ProtoReflect.Descriptor instead.
-func (*ExtractResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use ProcessEvent.ProtoReflect.Descriptor instead.
+func (*ProcessEvent) Descriptor() ([]byte, []int) {
 	return file_extractor_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *ExtractResponse) GetDocumentId() string {
+func (x *ProcessEvent) GetPayload() isProcessEvent_Payload {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *ProcessEvent) GetMetadata() *ProcessMetadata {
+	if x != nil {
+		if x, ok := x.Payload.(*ProcessEvent_Metadata); ok {
+			return x.Metadata
+		}
+	}
+	return nil
+}
+
+func (x *ProcessEvent) GetChunkBatch() *ChunkBatch {
+	if x != nil {
+		if x, ok := x.Payload.(*ProcessEvent_ChunkBatch); ok {
+			return x.ChunkBatch
+		}
+	}
+	return nil
+}
+
+type isProcessEvent_Payload interface {
+	isProcessEvent_Payload()
+}
+
+type ProcessEvent_Metadata struct {
+	Metadata *ProcessMetadata `protobuf:"bytes,1,opt,name=metadata,proto3,oneof"`
+}
+
+type ProcessEvent_ChunkBatch struct {
+	ChunkBatch *ChunkBatch `protobuf:"bytes,2,opt,name=chunk_batch,json=chunkBatch,proto3,oneof"`
+}
+
+func (*ProcessEvent_Metadata) isProcessEvent_Payload() {}
+
+func (*ProcessEvent_ChunkBatch) isProcessEvent_Payload() {}
+
+type ProcessMetadata struct {
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	DocumentId          string                 `protobuf:"bytes,1,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
+	Text                string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
+	PageCount           uint32                 `protobuf:"varint,3,opt,name=page_count,json=pageCount,proto3" json:"page_count,omitempty"`
+	ChunkCount          uint32                 `protobuf:"varint,4,opt,name=chunk_count,json=chunkCount,proto3" json:"chunk_count,omitempty"`
+	EmbeddingDimensions uint32                 `protobuf:"varint,5,opt,name=embedding_dimensions,json=embeddingDimensions,proto3" json:"embedding_dimensions,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *ProcessMetadata) Reset() {
+	*x = ProcessMetadata{}
+	mi := &file_extractor_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProcessMetadata) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProcessMetadata) ProtoMessage() {}
+
+func (x *ProcessMetadata) ProtoReflect() protoreflect.Message {
+	mi := &file_extractor_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProcessMetadata.ProtoReflect.Descriptor instead.
+func (*ProcessMetadata) Descriptor() ([]byte, []int) {
+	return file_extractor_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ProcessMetadata) GetDocumentId() string {
 	if x != nil {
 		return x.DocumentId
 	}
 	return ""
 }
 
-func (x *ExtractResponse) GetText() string {
+func (x *ProcessMetadata) GetText() string {
 	if x != nil {
 		return x.Text
 	}
 	return ""
 }
 
-func (x *ExtractResponse) GetPageCount() uint32 {
+func (x *ProcessMetadata) GetPageCount() uint32 {
 	if x != nil {
 		return x.PageCount
 	}
 	return 0
+}
+
+func (x *ProcessMetadata) GetChunkCount() uint32 {
+	if x != nil {
+		return x.ChunkCount
+	}
+	return 0
+}
+
+func (x *ProcessMetadata) GetEmbeddingDimensions() uint32 {
+	if x != nil {
+		return x.EmbeddingDimensions
+	}
+	return 0
+}
+
+type ChunkBatch struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BatchIndex    uint32                 `protobuf:"varint,1,opt,name=batch_index,json=batchIndex,proto3" json:"batch_index,omitempty"`
+	Chunks        []*Chunk               `protobuf:"bytes,2,rep,name=chunks,proto3" json:"chunks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChunkBatch) Reset() {
+	*x = ChunkBatch{}
+	mi := &file_extractor_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChunkBatch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChunkBatch) ProtoMessage() {}
+
+func (x *ChunkBatch) ProtoReflect() protoreflect.Message {
+	mi := &file_extractor_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChunkBatch.ProtoReflect.Descriptor instead.
+func (*ChunkBatch) Descriptor() ([]byte, []int) {
+	return file_extractor_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ChunkBatch) GetBatchIndex() uint32 {
+	if x != nil {
+		return x.BatchIndex
+	}
+	return 0
+}
+
+func (x *ChunkBatch) GetChunks() []*Chunk {
+	if x != nil {
+		return x.Chunks
+	}
+	return nil
+}
+
+type Chunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Index         uint32                 `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
+	Text          string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
+	StartOffset   uint64                 `protobuf:"varint,3,opt,name=start_offset,json=startOffset,proto3" json:"start_offset,omitempty"`
+	EndOffset     uint64                 `protobuf:"varint,4,opt,name=end_offset,json=endOffset,proto3" json:"end_offset,omitempty"`
+	Embedding     []float32              `protobuf:"fixed32,5,rep,packed,name=embedding,proto3" json:"embedding,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Chunk) Reset() {
+	*x = Chunk{}
+	mi := &file_extractor_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Chunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Chunk) ProtoMessage() {}
+
+func (x *Chunk) ProtoReflect() protoreflect.Message {
+	mi := &file_extractor_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Chunk.ProtoReflect.Descriptor instead.
+func (*Chunk) Descriptor() ([]byte, []int) {
+	return file_extractor_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Chunk) GetIndex() uint32 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *Chunk) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *Chunk) GetStartOffset() uint64 {
+	if x != nil {
+		return x.StartOffset
+	}
+	return 0
+}
+
+func (x *Chunk) GetEndOffset() uint64 {
+	if x != nil {
+		return x.EndOffset
+	}
+	return 0
+}
+
+func (x *Chunk) GetEmbedding() []float32 {
+	if x != nil {
+		return x.Embedding
+	}
+	return nil
+}
+
+type EmbedQuestionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Text          string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EmbedQuestionRequest) Reset() {
+	*x = EmbedQuestionRequest{}
+	mi := &file_extractor_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EmbedQuestionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EmbedQuestionRequest) ProtoMessage() {}
+
+func (x *EmbedQuestionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_extractor_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EmbedQuestionRequest.ProtoReflect.Descriptor instead.
+func (*EmbedQuestionRequest) Descriptor() ([]byte, []int) {
+	return file_extractor_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *EmbedQuestionRequest) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+type EmbedQuestionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Embedding     []float32              `protobuf:"fixed32,1,rep,packed,name=embedding,proto3" json:"embedding,omitempty"`
+	Dimensions    uint32                 `protobuf:"varint,2,opt,name=dimensions,proto3" json:"dimensions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EmbedQuestionResponse) Reset() {
+	*x = EmbedQuestionResponse{}
+	mi := &file_extractor_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EmbedQuestionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EmbedQuestionResponse) ProtoMessage() {}
+
+func (x *EmbedQuestionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_extractor_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EmbedQuestionResponse.ProtoReflect.Descriptor instead.
+func (*EmbedQuestionResponse) Descriptor() ([]byte, []int) {
+	return file_extractor_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *EmbedQuestionResponse) GetEmbedding() []float32 {
+	if x != nil {
+		return x.Embedding
+	}
+	return nil
+}
+
+func (x *EmbedQuestionResponse) GetDimensions() uint32 {
+	if x != nil {
+		return x.Dimensions
+	}
+	return 0
+}
+
+type AnswerQuestionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Question      string                 `protobuf:"bytes,1,opt,name=question,proto3" json:"question,omitempty"`
+	Contexts      []*AnswerContext       `protobuf:"bytes,2,rep,name=contexts,proto3" json:"contexts,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AnswerQuestionRequest) Reset() {
+	*x = AnswerQuestionRequest{}
+	mi := &file_extractor_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AnswerQuestionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AnswerQuestionRequest) ProtoMessage() {}
+
+func (x *AnswerQuestionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_extractor_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AnswerQuestionRequest.ProtoReflect.Descriptor instead.
+func (*AnswerQuestionRequest) Descriptor() ([]byte, []int) {
+	return file_extractor_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *AnswerQuestionRequest) GetQuestion() string {
+	if x != nil {
+		return x.Question
+	}
+	return ""
+}
+
+func (x *AnswerQuestionRequest) GetContexts() []*AnswerContext {
+	if x != nil {
+		return x.Contexts
+	}
+	return nil
+}
+
+type AnswerContext struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ChunkIndex    uint32                 `protobuf:"varint,1,opt,name=chunk_index,json=chunkIndex,proto3" json:"chunk_index,omitempty"`
+	Text          string                 `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AnswerContext) Reset() {
+	*x = AnswerContext{}
+	mi := &file_extractor_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AnswerContext) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AnswerContext) ProtoMessage() {}
+
+func (x *AnswerContext) ProtoReflect() protoreflect.Message {
+	mi := &file_extractor_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AnswerContext.ProtoReflect.Descriptor instead.
+func (*AnswerContext) Descriptor() ([]byte, []int) {
+	return file_extractor_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *AnswerContext) GetChunkIndex() uint32 {
+	if x != nil {
+		return x.ChunkIndex
+	}
+	return 0
+}
+
+func (x *AnswerContext) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+type AnswerEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Text          string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AnswerEvent) Reset() {
+	*x = AnswerEvent{}
+	mi := &file_extractor_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AnswerEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AnswerEvent) ProtoMessage() {}
+
+func (x *AnswerEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_extractor_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AnswerEvent.ProtoReflect.Descriptor instead.
+func (*AnswerEvent) Descriptor() ([]byte, []int) {
+	return file_extractor_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *AnswerEvent) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
 }
 
 var File_extractor_proto protoreflect.FileDescriptor
@@ -138,18 +608,56 @@ var File_extractor_proto protoreflect.FileDescriptor
 const file_extractor_proto_rawDesc = "" +
 	"\n" +
 	"\x0fextractor.proto\x12\textractor\"C\n" +
-	"\x0eExtractRequest\x12\x1f\n" +
+	"\x0eProcessRequest\x12\x1f\n" +
 	"\vdocument_id\x18\x01 \x01(\tR\n" +
 	"documentId\x12\x10\n" +
-	"\x03pdf\x18\x02 \x01(\fR\x03pdf\"e\n" +
-	"\x0fExtractResponse\x12\x1f\n" +
+	"\x03pdf\x18\x02 \x01(\fR\x03pdf\"\x8d\x01\n" +
+	"\fProcessEvent\x128\n" +
+	"\bmetadata\x18\x01 \x01(\v2\x1a.extractor.ProcessMetadataH\x00R\bmetadata\x128\n" +
+	"\vchunk_batch\x18\x02 \x01(\v2\x15.extractor.ChunkBatchH\x00R\n" +
+	"chunkBatchB\t\n" +
+	"\apayload\"\xb9\x01\n" +
+	"\x0fProcessMetadata\x12\x1f\n" +
 	"\vdocument_id\x18\x01 \x01(\tR\n" +
 	"documentId\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x1d\n" +
 	"\n" +
-	"page_count\x18\x03 \x01(\rR\tpageCount2Q\n" +
-	"\rTextExtractor\x12@\n" +
-	"\aExtract\x12\x19.extractor.ExtractRequest\x1a\x1a.extractor.ExtractResponseB\x17Z\x15api/proto;extractorpbb\x06proto3"
+	"page_count\x18\x03 \x01(\rR\tpageCount\x12\x1f\n" +
+	"\vchunk_count\x18\x04 \x01(\rR\n" +
+	"chunkCount\x121\n" +
+	"\x14embedding_dimensions\x18\x05 \x01(\rR\x13embeddingDimensions\"W\n" +
+	"\n" +
+	"ChunkBatch\x12\x1f\n" +
+	"\vbatch_index\x18\x01 \x01(\rR\n" +
+	"batchIndex\x12(\n" +
+	"\x06chunks\x18\x02 \x03(\v2\x10.extractor.ChunkR\x06chunks\"\x91\x01\n" +
+	"\x05Chunk\x12\x14\n" +
+	"\x05index\x18\x01 \x01(\rR\x05index\x12\x12\n" +
+	"\x04text\x18\x02 \x01(\tR\x04text\x12!\n" +
+	"\fstart_offset\x18\x03 \x01(\x04R\vstartOffset\x12\x1d\n" +
+	"\n" +
+	"end_offset\x18\x04 \x01(\x04R\tendOffset\x12\x1c\n" +
+	"\tembedding\x18\x05 \x03(\x02R\tembedding\"*\n" +
+	"\x14EmbedQuestionRequest\x12\x12\n" +
+	"\x04text\x18\x01 \x01(\tR\x04text\"U\n" +
+	"\x15EmbedQuestionResponse\x12\x1c\n" +
+	"\tembedding\x18\x01 \x03(\x02R\tembedding\x12\x1e\n" +
+	"\n" +
+	"dimensions\x18\x02 \x01(\rR\n" +
+	"dimensions\"i\n" +
+	"\x15AnswerQuestionRequest\x12\x1a\n" +
+	"\bquestion\x18\x01 \x01(\tR\bquestion\x124\n" +
+	"\bcontexts\x18\x02 \x03(\v2\x18.extractor.AnswerContextR\bcontexts\"D\n" +
+	"\rAnswerContext\x12\x1f\n" +
+	"\vchunk_index\x18\x01 \x01(\rR\n" +
+	"chunkIndex\x12\x12\n" +
+	"\x04text\x18\x02 \x01(\tR\x04text\"!\n" +
+	"\vAnswerEvent\x12\x12\n" +
+	"\x04text\x18\x01 \x01(\tR\x04text2\xf6\x01\n" +
+	"\x11DocumentProcessor\x12?\n" +
+	"\aProcess\x12\x19.extractor.ProcessRequest\x1a\x17.extractor.ProcessEvent0\x01\x12R\n" +
+	"\rEmbedQuestion\x12\x1f.extractor.EmbedQuestionRequest\x1a .extractor.EmbedQuestionResponse\x12L\n" +
+	"\x0eAnswerQuestion\x12 .extractor.AnswerQuestionRequest\x1a\x16.extractor.AnswerEvent0\x01B\x17Z\x15api/proto;extractorpbb\x06proto3"
 
 var (
 	file_extractor_proto_rawDescOnce sync.Once
@@ -163,19 +671,35 @@ func file_extractor_proto_rawDescGZIP() []byte {
 	return file_extractor_proto_rawDescData
 }
 
-var file_extractor_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_extractor_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_extractor_proto_goTypes = []any{
-	(*ExtractRequest)(nil),  // 0: extractor.ExtractRequest
-	(*ExtractResponse)(nil), // 1: extractor.ExtractResponse
+	(*ProcessRequest)(nil),        // 0: extractor.ProcessRequest
+	(*ProcessEvent)(nil),          // 1: extractor.ProcessEvent
+	(*ProcessMetadata)(nil),       // 2: extractor.ProcessMetadata
+	(*ChunkBatch)(nil),            // 3: extractor.ChunkBatch
+	(*Chunk)(nil),                 // 4: extractor.Chunk
+	(*EmbedQuestionRequest)(nil),  // 5: extractor.EmbedQuestionRequest
+	(*EmbedQuestionResponse)(nil), // 6: extractor.EmbedQuestionResponse
+	(*AnswerQuestionRequest)(nil), // 7: extractor.AnswerQuestionRequest
+	(*AnswerContext)(nil),         // 8: extractor.AnswerContext
+	(*AnswerEvent)(nil),           // 9: extractor.AnswerEvent
 }
 var file_extractor_proto_depIdxs = []int32{
-	0, // 0: extractor.TextExtractor.Extract:input_type -> extractor.ExtractRequest
-	1, // 1: extractor.TextExtractor.Extract:output_type -> extractor.ExtractResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	2, // 0: extractor.ProcessEvent.metadata:type_name -> extractor.ProcessMetadata
+	3, // 1: extractor.ProcessEvent.chunk_batch:type_name -> extractor.ChunkBatch
+	4, // 2: extractor.ChunkBatch.chunks:type_name -> extractor.Chunk
+	8, // 3: extractor.AnswerQuestionRequest.contexts:type_name -> extractor.AnswerContext
+	0, // 4: extractor.DocumentProcessor.Process:input_type -> extractor.ProcessRequest
+	5, // 5: extractor.DocumentProcessor.EmbedQuestion:input_type -> extractor.EmbedQuestionRequest
+	7, // 6: extractor.DocumentProcessor.AnswerQuestion:input_type -> extractor.AnswerQuestionRequest
+	1, // 7: extractor.DocumentProcessor.Process:output_type -> extractor.ProcessEvent
+	6, // 8: extractor.DocumentProcessor.EmbedQuestion:output_type -> extractor.EmbedQuestionResponse
+	9, // 9: extractor.DocumentProcessor.AnswerQuestion:output_type -> extractor.AnswerEvent
+	7, // [7:10] is the sub-list for method output_type
+	4, // [4:7] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_extractor_proto_init() }
@@ -183,13 +707,17 @@ func file_extractor_proto_init() {
 	if File_extractor_proto != nil {
 		return
 	}
+	file_extractor_proto_msgTypes[1].OneofWrappers = []any{
+		(*ProcessEvent_Metadata)(nil),
+		(*ProcessEvent_ChunkBatch)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_extractor_proto_rawDesc), len(file_extractor_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

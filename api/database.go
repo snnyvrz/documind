@@ -11,9 +11,21 @@ import (
 type documentStore interface {
 	Create(context.Context, document) error
 	ClaimNext(context.Context) (*document, error)
-	Complete(context.Context, string, string) error
+	Complete(context.Context, string, string, []documentChunk) error
 	Fail(context.Context, string, string) error
 	Find(context.Context, string) (*document, error)
+	SearchChunks(context.Context, string, string, int) ([]documentChunk, error)
+}
+
+type documentChunk struct {
+	ID          string `gorm:"type:uuid;primaryKey"`
+	DocumentID  string `gorm:"type:uuid;index;uniqueIndex:document_chunk_index"`
+	ChunkIndex  int    `gorm:"uniqueIndex:document_chunk_index"`
+	Text        string `gorm:"type:text"`
+	StartOffset uint64
+	EndOffset   uint64
+	Embedding   string `gorm:"type:vector(768)"`
+	CreatedAt   time.Time
 }
 
 type document struct {
@@ -65,7 +77,10 @@ func (s *postgresDocumentStore) Close() error {
 }
 
 func (s *postgresDocumentStore) initialize() error {
-	return s.database.AutoMigrate(&document{})
+	if err := s.database.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
+		return err
+	}
+	return s.database.AutoMigrate(&document{}, &documentChunk{})
 }
 
 func (s *postgresDocumentStore) Create(ctx context.Context, document document) error {
@@ -91,9 +106,19 @@ RETURNING *`).Scan(&result).Error; err != nil {
 	return &result, nil
 }
 
-func (s *postgresDocumentStore) Complete(ctx context.Context, id, text string) error {
-	return s.database.WithContext(ctx).Model(&document{}).Where("id = ?", id).
-		Updates(map[string]any{"status": "completed", "extracted_text": text, "updated_at": time.Now().UTC()}).Error
+func (s *postgresDocumentStore) Complete(ctx context.Context, id, text string, chunks []documentChunk) error {
+	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("document_id = ?", id).Delete(&documentChunk{}).Error; err != nil {
+			return err
+		}
+		if len(chunks) > 0 {
+			if err := tx.Create(&chunks).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Model(&document{}).Where("id = ?", id).
+			Updates(map[string]any{"status": "completed", "extracted_text": text, "updated_at": time.Now().UTC()}).Error
+	})
 }
 
 func (s *postgresDocumentStore) Fail(ctx context.Context, id, message string) error {
@@ -107,4 +132,11 @@ func (s *postgresDocumentStore) Find(ctx context.Context, id string) (*document,
 		return nil, err
 	}
 	return &result, nil
+}
+
+func (s *postgresDocumentStore) SearchChunks(ctx context.Context, documentID, embedding string, limit int) ([]documentChunk, error) {
+	var chunks []documentChunk
+	err := s.database.WithContext(ctx).Raw(`SELECT id, document_id, chunk_index, text, start_offset, end_offset, created_at
+FROM document_chunks WHERE document_id = ? ORDER BY embedding <=> ?::vector LIMIT ?`, documentID, embedding, limit).Scan(&chunks).Error
+	return chunks, err
 }

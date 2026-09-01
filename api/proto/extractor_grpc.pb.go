@@ -19,103 +19,186 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TextExtractor_Extract_FullMethodName = "/extractor.TextExtractor/Extract"
+	DocumentProcessor_Process_FullMethodName        = "/extractor.DocumentProcessor/Process"
+	DocumentProcessor_EmbedQuestion_FullMethodName  = "/extractor.DocumentProcessor/EmbedQuestion"
+	DocumentProcessor_AnswerQuestion_FullMethodName = "/extractor.DocumentProcessor/AnswerQuestion"
 )
 
-// TextExtractorClient is the client API for TextExtractor service.
+// DocumentProcessorClient is the client API for DocumentProcessor service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type TextExtractorClient interface {
-	Extract(ctx context.Context, in *ExtractRequest, opts ...grpc.CallOption) (*ExtractResponse, error)
+type DocumentProcessorClient interface {
+	Process(ctx context.Context, in *ProcessRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ProcessEvent], error)
+	EmbedQuestion(ctx context.Context, in *EmbedQuestionRequest, opts ...grpc.CallOption) (*EmbedQuestionResponse, error)
+	AnswerQuestion(ctx context.Context, in *AnswerQuestionRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AnswerEvent], error)
 }
 
-type textExtractorClient struct {
+type documentProcessorClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewTextExtractorClient(cc grpc.ClientConnInterface) TextExtractorClient {
-	return &textExtractorClient{cc}
+func NewDocumentProcessorClient(cc grpc.ClientConnInterface) DocumentProcessorClient {
+	return &documentProcessorClient{cc}
 }
 
-func (c *textExtractorClient) Extract(ctx context.Context, in *ExtractRequest, opts ...grpc.CallOption) (*ExtractResponse, error) {
+func (c *documentProcessorClient) Process(ctx context.Context, in *ProcessRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ProcessEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ExtractResponse)
-	err := c.cc.Invoke(ctx, TextExtractor_Extract_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &DocumentProcessor_ServiceDesc.Streams[0], DocumentProcessor_Process_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ProcessRequest, ProcessEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DocumentProcessor_ProcessClient = grpc.ServerStreamingClient[ProcessEvent]
+
+func (c *documentProcessorClient) EmbedQuestion(ctx context.Context, in *EmbedQuestionRequest, opts ...grpc.CallOption) (*EmbedQuestionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EmbedQuestionResponse)
+	err := c.cc.Invoke(ctx, DocumentProcessor_EmbedQuestion_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// TextExtractorServer is the server API for TextExtractor service.
-// All implementations must embed UnimplementedTextExtractorServer
-// for forward compatibility.
-type TextExtractorServer interface {
-	Extract(context.Context, *ExtractRequest) (*ExtractResponse, error)
-	mustEmbedUnimplementedTextExtractorServer()
+func (c *documentProcessorClient) AnswerQuestion(ctx context.Context, in *AnswerQuestionRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AnswerEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &DocumentProcessor_ServiceDesc.Streams[1], DocumentProcessor_AnswerQuestion_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[AnswerQuestionRequest, AnswerEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
 }
 
-// UnimplementedTextExtractorServer must be embedded to have
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DocumentProcessor_AnswerQuestionClient = grpc.ServerStreamingClient[AnswerEvent]
+
+// DocumentProcessorServer is the server API for DocumentProcessor service.
+// All implementations must embed UnimplementedDocumentProcessorServer
+// for forward compatibility.
+type DocumentProcessorServer interface {
+	Process(*ProcessRequest, grpc.ServerStreamingServer[ProcessEvent]) error
+	EmbedQuestion(context.Context, *EmbedQuestionRequest) (*EmbedQuestionResponse, error)
+	AnswerQuestion(*AnswerQuestionRequest, grpc.ServerStreamingServer[AnswerEvent]) error
+	mustEmbedUnimplementedDocumentProcessorServer()
+}
+
+// UnimplementedDocumentProcessorServer must be embedded to have
 // forward compatible implementations.
 //
 // NOTE: this should be embedded by value instead of pointer to avoid a nil
 // pointer dereference when methods are called.
-type UnimplementedTextExtractorServer struct{}
+type UnimplementedDocumentProcessorServer struct{}
 
-func (UnimplementedTextExtractorServer) Extract(context.Context, *ExtractRequest) (*ExtractResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Extract not implemented")
+func (UnimplementedDocumentProcessorServer) Process(*ProcessRequest, grpc.ServerStreamingServer[ProcessEvent]) error {
+	return status.Errorf(codes.Unimplemented, "method Process not implemented")
 }
-func (UnimplementedTextExtractorServer) mustEmbedUnimplementedTextExtractorServer() {}
-func (UnimplementedTextExtractorServer) testEmbeddedByValue()                       {}
+func (UnimplementedDocumentProcessorServer) EmbedQuestion(context.Context, *EmbedQuestionRequest) (*EmbedQuestionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method EmbedQuestion not implemented")
+}
+func (UnimplementedDocumentProcessorServer) AnswerQuestion(*AnswerQuestionRequest, grpc.ServerStreamingServer[AnswerEvent]) error {
+	return status.Errorf(codes.Unimplemented, "method AnswerQuestion not implemented")
+}
+func (UnimplementedDocumentProcessorServer) mustEmbedUnimplementedDocumentProcessorServer() {}
+func (UnimplementedDocumentProcessorServer) testEmbeddedByValue()                           {}
 
-// UnsafeTextExtractorServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to TextExtractorServer will
+// UnsafeDocumentProcessorServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to DocumentProcessorServer will
 // result in compilation errors.
-type UnsafeTextExtractorServer interface {
-	mustEmbedUnimplementedTextExtractorServer()
+type UnsafeDocumentProcessorServer interface {
+	mustEmbedUnimplementedDocumentProcessorServer()
 }
 
-func RegisterTextExtractorServer(s grpc.ServiceRegistrar, srv TextExtractorServer) {
-	// If the following call pancis, it indicates UnimplementedTextExtractorServer was
+func RegisterDocumentProcessorServer(s grpc.ServiceRegistrar, srv DocumentProcessorServer) {
+	// If the following call pancis, it indicates UnimplementedDocumentProcessorServer was
 	// embedded by pointer and is nil.  This will cause panics if an
 	// unimplemented method is ever invoked, so we test this at initialization
 	// time to prevent it from happening at runtime later due to I/O.
 	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
 		t.testEmbeddedByValue()
 	}
-	s.RegisterService(&TextExtractor_ServiceDesc, srv)
+	s.RegisterService(&DocumentProcessor_ServiceDesc, srv)
 }
 
-func _TextExtractor_Extract_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ExtractRequest)
+func _DocumentProcessor_Process_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ProcessRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(DocumentProcessorServer).Process(m, &grpc.GenericServerStream[ProcessRequest, ProcessEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DocumentProcessor_ProcessServer = grpc.ServerStreamingServer[ProcessEvent]
+
+func _DocumentProcessor_EmbedQuestion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EmbedQuestionRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(TextExtractorServer).Extract(ctx, in)
+		return srv.(DocumentProcessorServer).EmbedQuestion(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: TextExtractor_Extract_FullMethodName,
+		FullMethod: DocumentProcessor_EmbedQuestion_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TextExtractorServer).Extract(ctx, req.(*ExtractRequest))
+		return srv.(DocumentProcessorServer).EmbedQuestion(ctx, req.(*EmbedQuestionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-// TextExtractor_ServiceDesc is the grpc.ServiceDesc for TextExtractor service.
+func _DocumentProcessor_AnswerQuestion_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(AnswerQuestionRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(DocumentProcessorServer).AnswerQuestion(m, &grpc.GenericServerStream[AnswerQuestionRequest, AnswerEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type DocumentProcessor_AnswerQuestionServer = grpc.ServerStreamingServer[AnswerEvent]
+
+// DocumentProcessor_ServiceDesc is the grpc.ServiceDesc for DocumentProcessor service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var TextExtractor_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "extractor.TextExtractor",
-	HandlerType: (*TextExtractorServer)(nil),
+var DocumentProcessor_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "extractor.DocumentProcessor",
+	HandlerType: (*DocumentProcessorServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "Extract",
-			Handler:    _TextExtractor_Extract_Handler,
+			MethodName: "EmbedQuestion",
+			Handler:    _DocumentProcessor_EmbedQuestion_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "Process",
+			Handler:       _DocumentProcessor_Process_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "AnswerQuestion",
+			Handler:       _DocumentProcessor_AnswerQuestion_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "extractor.proto",
 }

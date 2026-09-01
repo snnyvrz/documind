@@ -1,8 +1,8 @@
 # DocuMind
 
-DocuMind is a PDF document upload and text-extraction service. It provides a
-React frontend, a Go API, PostgreSQL persistence, and a Python extraction
-service connected to the API over gRPC.
+DocuMind is a PDF document upload and embedding service. It provides a React
+frontend, a Go API, PostgreSQL with pgvector, and a Python document processor
+connected to the API over gRPC.
 
 ## Architecture
 
@@ -19,8 +19,8 @@ Go API (Echo + GORM)
   |                 \
   | PostgreSQL        | gRPC with PDF bytes
   v                 v
-PostgreSQL      Python extractor
-                (FastAPI + gRPC + pypdf)
+PostgreSQL      Python document processor
+                (FastAPI + gRPC + pypdf + Ollama)
 ```
 
 The frontend and API are independent applications. Docker Compose connects the
@@ -34,19 +34,20 @@ PDF processing is asynchronous:
 2. The Go API validates the PDF magic bytes and stores it under `data/`.
 3. The API stores a database record with status `queued` and returns `202 Accepted`.
 4. A background worker claims queued documents and marks them `processing`.
-5. The worker sends the PDF bytes to the Python extractor over gRPC.
-6. The extracted text is stored in PostgreSQL and the document becomes `completed`.
-7. If extraction fails, the document becomes `failed` and stores an error message.
-8. The frontend polls `GET /documents/{id}` and displays the extracted text.
+5. The worker sends the PDF bytes to the Python document processor over gRPC.
+6. The processor extracts text, chunks it, and streams embedding batches from Ollama.
+7. The API stores the extracted text and chunks/vectors in PostgreSQL and marks the document `completed`.
+8. If processing fails, the document becomes `failed` and stores an error message.
+9. The frontend polls `GET /documents/{id}` and displays the extracted text.
 
-The current extractor handles PDFs with embedded text. Scanned PDFs require an
-OCR implementation, which can be added to the Python service later.
+The document processor handles PDFs with embedded text. Scanned PDFs require an
+OCR implementation, which can be added later.
 
 ## Repository Layout
 
 ```text
 api/                 Go HTTP API, database access, worker, and gRPC client
-extractor/           Python uv project with FastAPI and gRPC server
+document-processor/  Python uv project with FastAPI, gRPC, and Ollama processing
 frontend/            React application and nginx configuration
 proto/               Shared protobuf contract
 compose.yaml         Local full-stack Docker Compose configuration
@@ -62,7 +63,7 @@ For local service development:
 
 - Go 1.26 or newer
 - Bun for the frontend
-- `uv` for the extractor
+- `uv` for the document processor
 - PostgreSQL, or the Compose PostgreSQL service
 
 ## Run the Full Stack
@@ -84,8 +85,8 @@ The services use these local ports:
 | PostgreSQL | `localhost:5432` | Document metadata |
 | Extractor | internal only | HTTP health on `8000`, gRPC on `50051` |
 
-The extractor is not published to the host. The Go API reaches it through the
-Compose network at `extractor:50051`.
+The document processor is not published to the host. The Go API reaches it
+through the Compose network at `document-processor:50051`.
 
 Stop the stack with:
 
@@ -121,8 +122,8 @@ Run the API locally:
    cp api/.env.example api/.env
    ```
 
-3. Start the extractor locally, or set `EXTRACTOR_GRPC_URL` to another
-   extractor instance.
+3. Start the document processor locally, or set `DOCUMENT_PROCESSOR_GRPC_URL`
+   to another processor instance.
 
 4. Start the API:
 
@@ -136,13 +137,13 @@ default local upload directory is `../data` when using the example settings.
 
 ## Extractor Development
 
-The extractor is a `uv` project. Its dependencies and exact versions are
-defined in `extractor/pyproject.toml` and `extractor/uv.lock`.
+The document processor is a `uv` project. Its dependencies and exact versions
+are defined in `document-processor/pyproject.toml` and `document-processor/uv.lock`.
 
 Install the locked environment:
 
 ```sh
-cd extractor
+cd document-processor
 uv sync --locked
 ```
 
@@ -246,6 +247,27 @@ Completed response:
 
 Possible statuses are `queued`, `processing`, `completed`, and `failed`.
 
+### Ask a question
+
+```http
+POST /documents/{documentId}/questions
+Content-Type: application/json
+Accept: text/event-stream
+```
+
+Request body:
+
+```json
+{"question":"What are the main conclusions?"}
+```
+
+The response is an SSE stream containing `token` events while the answer is
+generated, followed by a `sources` event with the retrieved chunk text and
+offsets, and a final `done` event. Questions are single-turn and must target a
+completed document. Authentication and user ownership are not implemented yet;
+this endpoint should remain local-only until documents are associated with
+users.
+
 ## Configuration
 
 The main API environment variables are:
@@ -254,21 +276,32 @@ The main API environment variables are:
 | --- | --- | --- |
 | `DATABASE_URL` | PostgreSQL connection string | `postgres://documind:documind@db:5432/documind?sslmode=disable` |
 | `UPLOAD_DIRECTORY` | Directory where uploaded PDFs are stored | `/data` |
-| `EXTRACTOR_GRPC_URL` | gRPC address of the extractor | `extractor:50051` |
+| `DOCUMENT_PROCESSOR_GRPC_URL` | gRPC address of the document processor | `document-processor:50051` |
+| `OLLAMA_URL` | Ollama embedding API address | `http://ollama:11434` |
+| `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model | `nomic-embed-text` |
+| `OLLAMA_CHAT_MODEL` | Ollama answer-generation model | `qwen2.5:7b` |
+| `EMBEDDING_DIMENSIONS` | Expected vector dimension | `768` |
+| `CHUNK_SIZE` | Chunk size in characters | `4000` |
+| `CHUNK_OVERLAP` | Chunk overlap in characters | `400` |
+| `EMBEDDING_BATCH_SIZE` | Chunks embedded per streamed batch | `32` |
 
 The API and nginx both enforce the 20 MiB upload limit. Keep these values in
 sync if the limit changes.
 
+The default embedding model is `nomic-embed-text`, which produces
+768-dimensional vectors. A different model must produce the configured
+`EMBEDDING_DIMENSIONS` value unless the vector column is migrated.
+
 ## Protobuf
 
 The shared gRPC contract is defined in `proto/extractor.proto`. It describes
-the `TextExtractor.Extract` RPC, which accepts a document ID and PDF bytes and
-returns the document ID, extracted text, and page count.
+the streaming `DocumentProcessor.Process` RPC, which accepts a document ID and
+PDF bytes and returns metadata followed by chunk and embedding batches.
 
 Generated bindings are committed at:
 
 - `api/proto/` for Go
-- `extractor/generated/` for Python
+- `document-processor/generated/` for Python
 
 If the contract changes, regenerate both sets of bindings with the protobuf
 compiler and the Go and Python plugins.
