@@ -7,11 +7,21 @@ services:
     environment:
       DATABASE_URL: postgres://documind:documind@db:5432/documind?sslmode=disable
       UPLOAD_DIRECTORY: /data
+      EXTRACTOR_GRPC_URL: extractor:50051
     volumes:
       - ./data:/data
     depends_on:
       db:
         condition: service_healthy
+      extractor:
+        condition: service_started
+
+  extractor:
+    build:
+      context: ./extractor
+    expose:
+      - "8000"
+      - "50051"
 
   db:
     image: postgres:18-alpine

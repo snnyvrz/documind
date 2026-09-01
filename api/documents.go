@@ -71,7 +71,7 @@ func (h *documentHandler) Upload(c *echo.Context) error {
 		StoredPath:       storedPath,
 		MIMEType:         "application/pdf",
 		Size:             fileHeader.Size,
-		Status:           "uploaded",
+		Status:           "queued",
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -80,7 +80,22 @@ func (h *documentHandler) Upload(c *echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not save document metadata"})
 	}
 
-	return c.JSON(http.StatusCreated, map[string]string{"documentId": documentID, "status": document.Status})
+	return c.JSON(http.StatusAccepted, map[string]string{"documentId": documentID, "status": document.Status})
+}
+
+func (h *documentHandler) Get(c *echo.Context) error {
+	document, err := h.store.Find(context.Background(), c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
+	}
+	response := map[string]any{"documentId": document.ID, "filename": document.OriginalFilename, "status": document.Status}
+	if document.ExtractedText != nil {
+		response["text"] = *document.ExtractedText
+	}
+	if document.ErrorMessage != nil {
+		response["error"] = *document.ErrorMessage
+	}
+	return c.JSON(http.StatusOK, response)
 }
 
 func documentID() (string, error) {

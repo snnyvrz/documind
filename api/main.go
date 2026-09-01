@@ -25,6 +25,7 @@ func main() {
 	defer store.Close()
 
 	e := newServer(uploadDirectory, store)
+	startWorker(uploadDirectory, store)
 
 	if err := e.Start(":1323"); err != nil {
 		e.Logger.Error("failed to start server", "error", err)
@@ -58,7 +59,9 @@ func newServer(uploadDirectory string, store documentStore) *echo.Echo {
 		return c.JSON(http.StatusOK, map[string]string{"message": "Hello, World!"})
 	})
 
-	e.POST("/documents", newDocumentHandler(uploadDirectory, store).Upload)
+	handler := newDocumentHandler(uploadDirectory, store)
+	e.POST("/documents", handler.Upload)
+	e.GET("/documents/:id", handler.Get)
 
 	return e
 }

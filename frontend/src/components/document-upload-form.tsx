@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { FileText, Upload, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
@@ -22,6 +22,8 @@ export const DocumentUploadForm = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+  const [documentId, setDocumentId] = useState<string | null>(null);
+  const [extractedText, setExtractedText] = useState<string | null>(null);
   const {
     formState: { errors, isSubmitting },
     handleSubmit,
@@ -31,6 +33,26 @@ export const DocumentUploadForm = () => {
   } = useForm<UploadFormValues>({
     resolver: zodResolver(uploadSchema),
   });
+
+  useEffect(() => {
+    if (!documentId) return;
+    const poll = async () => {
+      const response = await fetch(`/documents/${documentId}`);
+      if (!response.ok) return;
+      const body = (await response.json()) as { status: string; text?: string; error?: string };
+      if (body.status === "completed") {
+        setExtractedText(body.text ?? "");
+        setUploadSuccess("Document processed successfully.");
+        setDocumentId(null);
+      } else if (body.status === "failed") {
+        setUploadError(body.error ?? "Text extraction failed.");
+        setDocumentId(null);
+      }
+    };
+    const interval = window.setInterval(() => void poll(), 1000);
+    void poll();
+    return () => window.clearInterval(interval);
+  }, [documentId]);
 
   const selectDocument = (file: File | undefined) => {
     if (!file) return;
@@ -73,7 +95,10 @@ export const DocumentUploadForm = () => {
         } | null;
         throw new Error(body?.error ?? "The document could not be uploaded.");
       }
-      setUploadSuccess("Document uploaded and ready for analysis.");
+      const body = (await response.json()) as { documentId: string };
+      setDocumentId(body.documentId);
+      setExtractedText(null);
+      setUploadSuccess("Document uploaded. Extracting text...");
     } catch (error) {
       setUploadError(
         error instanceof Error
@@ -152,6 +177,11 @@ export const DocumentUploadForm = () => {
         <p className="text-sm text-green-600 dark:text-green-400">
           {uploadSuccess}
         </p>
+      )}
+      {extractedText !== null && (
+        <pre className="max-h-96 overflow-auto whitespace-pre-wrap border p-4 text-sm">
+          {extractedText || "No embedded text found in this PDF."}
+        </pre>
       )}
 
       {document && (
