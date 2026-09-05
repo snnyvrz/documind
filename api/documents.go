@@ -93,7 +93,10 @@ func (h *documentHandler) Get(c *echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
 	}
-	response := map[string]any{"documentId": document.ID, "filename": document.OriginalFilename, "status": document.Status}
+	response := map[string]any{"documentId": document.ID, "filename": document.OriginalFilename, "status": document.Status, "attemptCount": document.AttemptCount}
+	if document.NextAttemptAt != nil {
+		response["nextAttemptAt"] = document.NextAttemptAt
+	}
 	if document.ExtractedText != nil {
 		response["text"] = *document.ExtractedText
 	}

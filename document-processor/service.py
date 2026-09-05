@@ -15,6 +15,7 @@ app = FastAPI(title="DocuMind document processor")
 
 GRPC_ADDRESS = "[::]:50051"
 GRPC_MAX_WORKERS = 4
+GRPC_MAX_MESSAGE_LENGTH = (20 * 1024 * 1024) + (1024 * 1024)
 
 
 @app.get("/health")
@@ -110,42 +111,56 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
                 page.extract_text() or "" for page in reader.pages
             ).strip()
             document_chunks = chunks(text)
-            yield extractor_pb2.ProcessEvent(
-                metadata=extractor_pb2.ProcessMetadata(
-                    document_id=request.document_id,
-                    text=text,
-                    page_count=len(reader.pages),
-                    chunk_count=len(document_chunks),
-                    embedding_dimensions=EMBEDDING_DIMENSIONS,
-                )
-            )
-            for batch_index in range(0, len(document_chunks), EMBEDDING_BATCH_SIZE):
-                batch = document_chunks[batch_index : batch_index + EMBEDDING_BATCH_SIZE]
-                vectors = embed([value for value, _, _ in batch])
-                yield extractor_pb2.ProcessEvent(
-                    chunk_batch=extractor_pb2.ChunkBatch(
-                        batch_index=batch_index // EMBEDDING_BATCH_SIZE,
-                        chunks=[
-                            extractor_pb2.Chunk(
-                                index=batch_index + offset,
-                                text=value,
-                                start_offset=start,
-                                end_offset=end,
-                                embedding=vector,
-                            )
-                            for offset, ((value, start, end), vector) in enumerate(zip(batch, vectors))
-                        ],
-                    )
-                )
         except Exception as error:
             context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 f"could not process PDF: {error}",
             )
 
+        yield extractor_pb2.ProcessEvent(
+            metadata=extractor_pb2.ProcessMetadata(
+                document_id=request.document_id,
+                text=text,
+                page_count=len(reader.pages),
+                chunk_count=len(document_chunks),
+                embedding_dimensions=EMBEDDING_DIMENSIONS,
+            )
+        )
+        for batch_index in range(0, len(document_chunks), EMBEDDING_BATCH_SIZE):
+            batch = document_chunks[batch_index : batch_index + EMBEDDING_BATCH_SIZE]
+            try:
+                vectors = embed([value for value, _, _ in batch])
+            except Exception as error:
+                context.abort(
+                    grpc.StatusCode.UNAVAILABLE,
+                    f"could not embed PDF: {error}",
+                )
+
+            yield extractor_pb2.ProcessEvent(
+                chunk_batch=extractor_pb2.ChunkBatch(
+                    batch_index=batch_index // EMBEDDING_BATCH_SIZE,
+                    chunks=[
+                        extractor_pb2.Chunk(
+                            index=batch_index + offset,
+                            text=value,
+                            start_offset=start,
+                            end_offset=end,
+                            embedding=vector,
+                        )
+                        for offset, ((value, start, end), vector) in enumerate(zip(batch, vectors))
+                    ],
+                )
+            )
+
 
 def serve_grpc() -> None:
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=GRPC_MAX_WORKERS))
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=GRPC_MAX_WORKERS),
+        options=[
+            ("grpc.max_receive_message_length", GRPC_MAX_MESSAGE_LENGTH),
+            ("grpc.max_send_message_length", GRPC_MAX_MESSAGE_LENGTH),
+        ],
+    )
     extractor_pb2_grpc.add_DocumentProcessorServicer_to_server(DocumentProcessor(), server)
     server.add_insecure_port(GRPC_ADDRESS)
     server.start()

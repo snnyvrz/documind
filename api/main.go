@@ -23,9 +23,13 @@ func main() {
 		panic("connect to document database: " + err.Error())
 	}
 	defer store.Close()
+	workerConfig, err := loadWorkerConfig()
+	if err != nil {
+		panic("configure document worker: " + err.Error())
+	}
 
 	e := newServer(uploadDirectory, store)
-	startWorker(uploadDirectory, store)
+	startWorker(uploadDirectory, store, workerConfig)
 
 	if err := e.Start(":1323"); err != nil {
 		e.Logger.Error("failed to start server", "error", err)

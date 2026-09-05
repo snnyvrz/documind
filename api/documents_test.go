@@ -11,54 +11,135 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 type memoryDocumentStore struct {
 	documents []document
+	chunks    []documentChunk
+	mutex     sync.Mutex
 }
 
 func (s *memoryDocumentStore) Create(_ context.Context, document document) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	s.documents = append(s.documents, document)
 	return nil
 }
 
-func (s *memoryDocumentStore) ClaimNext(_ context.Context) (*document, error) {
+func (s *memoryDocumentStore) ClaimNext(_ context.Context, leaseToken string, leaseDuration time.Duration, maxAttempts int) (*document, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	now := time.Now().UTC()
 	for index := range s.documents {
-		if s.documents[index].Status == "queued" {
-			s.documents[index].Status = "processing"
-			return &s.documents[index], nil
+		document := &s.documents[index]
+		eligible := document.Status == "queued" && (document.NextAttemptAt == nil || !document.NextAttemptAt.After(now))
+		eligible = eligible || document.Status == "processing" && (document.LeaseExpiresAt == nil || !document.LeaseExpiresAt.After(now))
+		if eligible && document.AttemptCount >= maxAttempts {
+			message := "document processing failed after maximum attempts"
+			document.Status = "failed"
+			document.ErrorMessage = &message
+			document.NextAttemptAt = nil
+			document.LeaseToken = nil
+			document.LeaseExpiresAt = nil
+		}
+	}
+	for index := range s.documents {
+		document := &s.documents[index]
+		eligible := document.Status == "queued" && (document.NextAttemptAt == nil || !document.NextAttemptAt.After(now))
+		eligible = eligible || document.Status == "processing" && (document.LeaseExpiresAt == nil || !document.LeaseExpiresAt.After(now))
+		if eligible && document.AttemptCount < maxAttempts {
+			expiresAt := now.Add(leaseDuration)
+			document.Status = "processing"
+			document.AttemptCount++
+			document.NextAttemptAt = nil
+			document.ErrorMessage = nil
+			document.LeaseToken = &leaseToken
+			document.LeaseExpiresAt = &expiresAt
+			claimed := *document
+			return &claimed, nil
 		}
 	}
 	return nil, gorm.ErrRecordNotFound
 }
 
-func (s *memoryDocumentStore) Complete(_ context.Context, id, text string, _ []documentChunk) error {
+func (s *memoryDocumentStore) RenewLease(_ context.Context, id, leaseToken string, leaseDuration time.Duration) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	for index := range s.documents {
-		if s.documents[index].ID == id {
-			s.documents[index].Status = "completed"
-			s.documents[index].ExtractedText = &text
+		document := &s.documents[index]
+		if activeLease(document, id, leaseToken) {
+			expiresAt := time.Now().UTC().Add(leaseDuration)
+			document.LeaseExpiresAt = &expiresAt
 			return nil
 		}
 	}
-	return gorm.ErrRecordNotFound
+	return errLeaseLost
 }
 
-func (s *memoryDocumentStore) Fail(_ context.Context, id, message string) error {
+func (s *memoryDocumentStore) Retry(_ context.Context, id, leaseToken string, nextAttemptAt time.Time) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	for index := range s.documents {
-		if s.documents[index].ID == id {
-			s.documents[index].Status = "failed"
-			s.documents[index].ErrorMessage = &message
+		document := &s.documents[index]
+		if activeLease(document, id, leaseToken) {
+			document.Status = "queued"
+			document.NextAttemptAt = &nextAttemptAt
+			document.LeaseToken = nil
+			document.LeaseExpiresAt = nil
+			document.ErrorMessage = nil
 			return nil
 		}
 	}
-	return gorm.ErrRecordNotFound
+	return errLeaseLost
+}
+
+func (s *memoryDocumentStore) Complete(_ context.Context, id, leaseToken, text string, chunks []documentChunk) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for index := range s.documents {
+		document := &s.documents[index]
+		if activeLease(document, id, leaseToken) {
+			document.Status = "completed"
+			document.ExtractedText = &text
+			document.LeaseToken = nil
+			document.LeaseExpiresAt = nil
+			s.chunks = append([]documentChunk(nil), chunks...)
+			return nil
+		}
+	}
+	return errLeaseLost
+}
+
+func (s *memoryDocumentStore) Fail(_ context.Context, id, leaseToken, message string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for index := range s.documents {
+		document := &s.documents[index]
+		if activeLease(document, id, leaseToken) {
+			document.Status = "failed"
+			document.ErrorMessage = &message
+			document.LeaseToken = nil
+			document.LeaseExpiresAt = nil
+			return nil
+		}
+	}
+	return errLeaseLost
+}
+
+func activeLease(document *document, id, leaseToken string) bool {
+	return document.ID == id && document.Status == "processing" && document.LeaseToken != nil && *document.LeaseToken == leaseToken && document.LeaseExpiresAt != nil && document.LeaseExpiresAt.After(time.Now().UTC())
 }
 
 func (s *memoryDocumentStore) Find(_ context.Context, id string) (*document, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	for index := range s.documents {
 		if s.documents[index].ID == id {
-			return &s.documents[index], nil
+			result := s.documents[index]
+			return &result, nil
 		}
 	}
 	return nil, gorm.ErrRecordNotFound
@@ -149,7 +230,8 @@ func TestUploadRejectsNonPDF(t *testing.T) {
 
 func TestGetDocument(t *testing.T) {
 	text := "extracted text"
-	store := &memoryDocumentStore{documents: []document{{ID: "document-id", OriginalFilename: "document.pdf", Status: "completed", ExtractedText: &text}}}
+	nextAttemptAt := time.Now().UTC().Add(time.Minute).Truncate(time.Second)
+	store := &memoryDocumentStore{documents: []document{{ID: "document-id", OriginalFilename: "document.pdf", Status: "completed", ExtractedText: &text, AttemptCount: 2, NextAttemptAt: &nextAttemptAt}}}
 	server := newServer(t.TempDir(), store)
 
 	request := httptest.NewRequest(http.MethodGet, "/documents/document-id", nil)
@@ -165,5 +247,8 @@ func TestGetDocument(t *testing.T) {
 	}
 	if body["status"] != "completed" || body["text"] != text {
 		t.Fatalf("response = %+v", body)
+	}
+	if body["attemptCount"] != float64(2) || body["nextAttemptAt"] == nil {
+		t.Fatalf("retry metadata = %+v", body)
 	}
 }

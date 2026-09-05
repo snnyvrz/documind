@@ -33,12 +33,17 @@ PDF processing is asynchronous:
 1. The frontend uploads a PDF to `POST /documents`.
 2. The Go API validates the PDF magic bytes and stores it under `data/`.
 3. The API stores a database record with status `queued` and returns `202 Accepted`.
-4. A background worker claims queued documents and marks them `processing`.
+4. A background worker claims queued documents, increments their attempt count,
+   and marks them `processing` under a renewable lease.
 5. The worker sends the PDF bytes to the Python document processor over gRPC.
 6. The processor extracts text, chunks it, and streams embedding batches from Ollama.
 7. The API stores the extracted text and chunks/vectors in PostgreSQL and marks the document `completed`.
-8. If processing fails, the document becomes `failed` and stores an error message.
-9. The frontend polls `GET /documents/{id}` and displays the extracted text.
+8. Temporary processor or Ollama failures return the document to `queued` with
+   exponential backoff. Invalid PDFs fail immediately, and temporary failures
+   become `failed` after five attempts.
+9. Expired processing leases are reclaimed automatically, so a worker or API
+   crash cannot leave a document permanently stuck in `processing`.
+10. The frontend polls `GET /documents/{id}` and displays the extracted text.
 
 The document processor handles PDFs with embedded text. Scanned PDFs require an
 OCR implementation, which can be added later.
@@ -230,7 +235,9 @@ Queued response:
 {
   "documentId": "ef77c3f5-2345-462c-a693-789588855a14",
   "filename": "document.pdf",
-  "status": "processing"
+  "status": "queued",
+  "attemptCount": 1,
+  "nextAttemptAt": "2026-09-05T12:00:05Z"
 }
 ```
 
@@ -241,11 +248,14 @@ Completed response:
   "documentId": "ef77c3f5-2345-462c-a693-789588855a14",
   "filename": "document.pdf",
   "status": "completed",
+  "attemptCount": 1,
   "text": "Extracted document text..."
 }
 ```
 
 Possible statuses are `queued`, `processing`, `completed`, and `failed`.
+`attemptCount` reports how many processing attempts have started, and
+`nextAttemptAt` is present while a retry is waiting for its backoff delay.
 
 ### Ask a question
 
@@ -277,6 +287,13 @@ The main API environment variables are:
 | `DATABASE_URL` | PostgreSQL connection string | `postgres://documind:documind@db:5432/documind?sslmode=disable` |
 | `UPLOAD_DIRECTORY` | Directory where uploaded PDFs are stored | `/data` |
 | `DOCUMENT_PROCESSOR_GRPC_URL` | gRPC address of the document processor | `document-processor:50051` |
+| `DOCUMENT_JOB_MAX_ATTEMPTS` | Maximum processing attempts before permanent failure | `5` |
+| `DOCUMENT_JOB_INITIAL_BACKOFF` | Delay after the first temporary failure | `5s` |
+| `DOCUMENT_JOB_MAX_BACKOFF` | Maximum exponential retry delay | `5m` |
+| `DOCUMENT_JOB_LEASE_DURATION` | Processing lease lifetime | `2m` |
+| `DOCUMENT_JOB_LEASE_RENEWAL` | Interval for renewing active leases | `30s` |
+| `DOCUMENT_JOB_PROCESSING_TIMEOUT` | Maximum duration of one processing attempt | `30m` |
+| `DOCUMENT_JOB_POLL_INTERVAL` | Worker delay when no job is available or claiming fails | `1s` |
 | `OLLAMA_URL` | Ollama embedding API address | `http://ollama:11434` |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model | `nomic-embed-text` |
 | `OLLAMA_CHAT_MODEL` | Ollama answer-generation model | `qwen2.5:7b` |
