@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "playwright test tests/document-workflows.mocked.spec.ts",
+    "test:e2e:production": "playwright test tests/document-workflows.production.spec.ts",
+    "test:e2e:install": "playwright install chromium"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
@@ -27,6 +30,7 @@
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.63.0",
     "@rolldown/plugin-babel": "^0.2.3",
     "@tailwindcss/vite": "^4.3.3",
     "@types/babel__core": "^7.20.5",

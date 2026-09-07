@@ -20,7 +20,7 @@ API (from `api/`):
 
 Document processor (from `document-processor/`):
 - Install locked dependencies: `uv sync --locked`.
-- Run tests: `uv run pytest`.
+- Run tests from `document-processor/`: `uv run python -m pytest`.
 - Run the FastAPI health server: `uv run uvicorn service:app --host 0.0.0.0 --port 8000`.
 - Run the gRPC server separately: `uv run python service.py`.
 
@@ -35,7 +35,7 @@ Stop the stack: `docker compose down`.
 CI-equivalent checks:
 - API unit tests: `cd api && go test ./...`.
 - API integration tests: set `DATABASE_URL` and run `cd api && go test -tags=integration ./...`.
-- Processor tests: `cd document-processor && uv sync --locked && uv run pytest`.
+- Processor tests: `cd document-processor && uv sync --locked && uv run python -m pytest`.
 - Frontend checks: `cd frontend && bun install --frozen-lockfile && bun run build && bun run lint`.
 
 ## API local setup

@@ -19,6 +19,7 @@ import (
 )
 
 const maxUploadSize = 20 << 20
+const defaultAnswerGenerationTimeout = 5 * time.Minute
 
 type documentHandler struct {
 	uploadDirectory string
@@ -117,6 +118,9 @@ func (h *documentHandler) Get(c *echo.Context) error {
 }
 
 func (h *documentHandler) Ask(c *echo.Context) error {
+	generationContext, cancel := context.WithTimeout(c.Request().Context(), answerGenerationTimeout())
+	defer cancel()
+
 	var request struct {
 		Question string `json:"question"`
 	}
@@ -136,7 +140,7 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 	}
 	defer connection.Close()
 	client := extractorpb.NewDocumentProcessorClient(connection)
-	embedding, err := client.EmbedQuestion(c.Request().Context(), &extractorpb.EmbedQuestionRequest{Text: request.Question})
+	embedding, err := client.EmbedQuestion(generationContext, &extractorpb.EmbedQuestionRequest{Text: request.Question})
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "could not embed question"})
 	}
@@ -148,11 +152,11 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 		vector += fmt.Sprintf("%g", value)
 	}
 	vector += "]"
-	contexts, err := h.store.SearchChunks(c.Request().Context(), document.ID, vector, retrievalLimit())
+	contexts, err := h.store.SearchChunks(generationContext, document.ID, vector, retrievalLimit())
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not search document"})
 	}
-	stream, err := client.AnswerQuestion(c.Request().Context(), &extractorpb.AnswerQuestionRequest{Question: request.Question, Contexts: func() []*extractorpb.AnswerContext {
+	stream, err := client.AnswerQuestion(generationContext, &extractorpb.AnswerQuestionRequest{Question: request.Question, Contexts: func() []*extractorpb.AnswerContext {
 		result := make([]*extractorpb.AnswerContext, len(contexts))
 		for i := range contexts {
 			result[i] = &extractorpb.AnswerContext{ChunkIndex: uint32(contexts[i].ChunkIndex), Text: contexts[i].Text, PageStart: contexts[i].PageStart, PageEnd: contexts[i].PageEnd}
@@ -166,17 +170,35 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 	response.Header().Set("Content-Type", "text/event-stream")
 	response.Header().Set("Cache-Control", "no-cache")
 	response.Header().Set("Connection", "keep-alive")
+	response.Header().Set("X-Accel-Buffering", "no")
 	flusher, canFlush := response.(http.Flusher)
 	for {
 		event, receiveErr := stream.Recv()
 		if receiveErr == io.EOF {
+			if generationContext.Err() != nil {
+				if c.Request().Context().Err() != nil {
+					return nil
+				}
+				writeSSEError(response, flusher, canFlush, "generation_timeout", "Answer generation timed out.")
+				writeSSEDone(response, flusher, canFlush, false)
+				return nil
+			}
 			break
 		}
 		if receiveErr != nil {
-			return receiveErr
+			if generationContext.Err() != nil {
+				if c.Request().Context().Err() != nil {
+					return nil
+				}
+				writeSSEError(response, flusher, canFlush, "generation_timeout", "Answer generation timed out.")
+			} else {
+				writeSSEError(response, flusher, canFlush, "generation_failed", "Could not complete the answer.")
+			}
+			writeSSEDone(response, flusher, canFlush, false)
+			return nil
 		}
 		payload, _ := json.Marshal(map[string]string{"text": event.Text})
-		fmt.Fprintf(response, "event: token\ndata: %s\n\n", payload)
+		writeSSE(response, flusher, canFlush, "token", payload)
 		if canFlush {
 			flusher.Flush()
 		}
@@ -186,11 +208,38 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 		sources[i] = documentSource{ChunkIndex: contexts[i].ChunkIndex, Text: contexts[i].Text, StartOffset: contexts[i].StartOffset, EndOffset: contexts[i].EndOffset, PageStart: contexts[i].PageStart, PageEnd: contexts[i].PageEnd}
 	}
 	payload, _ := json.Marshal(map[string]any{"sources": sources})
-	fmt.Fprintf(response, "event: sources\ndata: %s\n\nevent: done\ndata: {}\n\n", payload)
+	writeSSE(response, flusher, canFlush, "sources", payload)
+	writeSSEDone(response, flusher, canFlush, true)
+	return nil
+}
+
+func answerGenerationTimeout() time.Duration {
+	value := os.Getenv("ANSWER_GENERATION_TIMEOUT")
+	if value == "" {
+		return defaultAnswerGenerationTimeout
+	}
+	timeout, err := time.ParseDuration(value)
+	if err != nil || timeout <= 0 {
+		return defaultAnswerGenerationTimeout
+	}
+	return timeout
+}
+
+func writeSSE(response http.ResponseWriter, flusher http.Flusher, canFlush bool, event string, payload []byte) {
+	fmt.Fprintf(response, "event: %s\ndata: %s\n\n", event, payload)
 	if canFlush {
 		flusher.Flush()
 	}
-	return nil
+}
+
+func writeSSEError(response http.ResponseWriter, flusher http.Flusher, canFlush bool, code, message string) {
+	payload, _ := json.Marshal(map[string]string{"code": code, "message": message})
+	writeSSE(response, flusher, canFlush, "error", payload)
+}
+
+func writeSSEDone(response http.ResponseWriter, flusher http.Flusher, canFlush bool, ok bool) {
+	payload, _ := json.Marshal(map[string]bool{"ok": ok})
+	writeSSE(response, flusher, canFlush, "done", payload)
 }
 
 func retrievalLimit() int {

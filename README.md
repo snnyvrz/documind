@@ -210,8 +210,36 @@ bun run build
 bun run lint
 ```
 
-There is currently no frontend test script. The existing lint configuration has
-Fast Refresh warnings in some pre-existing shared components.
+Run the deterministic mocked browser workflow tests:
+
+```sh
+make test-e2e
+```
+
+Install the Playwright browser once before running browser tests:
+
+```sh
+cd frontend && bun run test:e2e:install
+```
+
+Run the production-like browser workflow against the full Docker Compose stack:
+
+```sh
+make test-e2e-production
+```
+
+This starts the stack, waits for the frontend on port `8080`, uploads a real PDF,
+waits for document processing, and asks a question through the real API. It
+requires Docker Compose and healthy Ollama models, and may take several minutes.
+The stack is stopped when the test finishes. Keep it running for debugging with:
+
+```sh
+KEEP_STACK=1 make test-e2e-production
+```
+
+The mocked suite is deterministic and does not require the backend, database,
+processor, or Ollama. The existing lint configuration has Fast Refresh warnings
+in some pre-existing shared components.
 
 ## HTTP API
 
@@ -316,9 +344,11 @@ The main API environment variables are:
 | `DOCUMENT_JOB_LEASE_RENEWAL` | Interval for renewing active leases | `30s` |
 | `DOCUMENT_JOB_PROCESSING_TIMEOUT` | Maximum duration of one processing attempt | `30m` |
 | `DOCUMENT_JOB_POLL_INTERVAL` | Worker delay when no job is available or claiming fails | `1s` |
+| `ANSWER_GENERATION_TIMEOUT` | Maximum duration of question embedding, retrieval, and answer generation | `5m` |
 | `OLLAMA_URL` | Ollama embedding API address | `http://ollama:11434` |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model | `nomic-embed-text` |
 | `OLLAMA_CHAT_MODEL` | Ollama answer-generation model | `qwen2.5:7b` |
+| `OLLAMA_CHAT_TIMEOUT` | Ollama answer request timeout in seconds | `120` |
 | `EMBEDDING_DIMENSIONS` | Expected vector dimension | `768` |
 | `CHUNK_SIZE` | Chunk size in characters | `4000` |
 | `CHUNK_OVERLAP` | Chunk overlap in characters | `400` |

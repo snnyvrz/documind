@@ -1,6 +1,7 @@
 from concurrent import futures
 from io import BytesIO
-from typing import Any, Iterator
+from threading import Event
+from typing import Any, Callable, Iterator
 
 import grpc
 import os
@@ -26,6 +27,7 @@ def health() -> dict[str, str]:
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
 OLLAMA_CHAT_MODEL = os.environ.get("OLLAMA_CHAT_MODEL", "qwen2.5:7b")
+OLLAMA_CHAT_TIMEOUT = float(os.environ.get("OLLAMA_CHAT_TIMEOUT", "120"))
 EMBEDDING_DIMENSIONS = int(os.environ.get("EMBEDDING_DIMENSIONS", "768"))
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "4000"))
 CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "400"))
@@ -75,7 +77,7 @@ def embed(values: list[str]) -> list[list[float]]:
     return embeddings
 
 
-def chat(question: str, contexts: list[Any]) -> Iterator[str]:
+def chat(question: str, contexts: list[Any], on_response: Callable[[httpx.Response], None] | None = None) -> Iterator[str]:
     excerpts = "\n\n".join(f"[Chunk {item.chunk_index}, pages {item.page_start}-{item.page_end}]\n{item.text}" for item in contexts)
     prompt = (
         "You answer questions about a document.\n\n"
@@ -87,8 +89,10 @@ def chat(question: str, contexts: list[Any]) -> Iterator[str]:
     with httpx.stream(
         "POST", f"{OLLAMA_URL.rstrip('/')}/api/chat",
         json={"model": OLLAMA_CHAT_MODEL, "stream": True, "options": {"temperature": 0}, "messages": [{"role": "user", "content": prompt}]},
-        timeout=120,
+        timeout=OLLAMA_CHAT_TIMEOUT,
     ) as response:
+        if on_response:
+            on_response(response)
         response.raise_for_status()
         for line in response.iter_lines():
             if line:
@@ -107,10 +111,29 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
             context.abort(grpc.StatusCode.UNAVAILABLE, f"could not embed question: {error}")
 
     def AnswerQuestion(self, request: Any, context: grpc.ServicerContext) -> Iterator[Any]:
+        response: httpx.Response | None = None
+        cancelled = Event()
+
+        def set_response(value: httpx.Response) -> None:
+            nonlocal response
+            response = value
+            if cancelled.is_set():
+                response.close()
+
+        def cancel_response() -> None:
+            cancelled.set()
+            if response is not None:
+                response.close()
+
+        context.add_callback(cancel_response)
         try:
-            for value in chat(request.question, request.contexts):
+            for value in chat(request.question, request.contexts, set_response):
+                if not context.is_active():
+                    return
                 yield extractor_pb2.AnswerEvent(text=value)
         except Exception as error:
+            if not context.is_active():
+                return
             context.abort(grpc.StatusCode.UNAVAILABLE, f"could not answer question: {error}")
 
     def Process(self, request: Any, context: grpc.ServicerContext) -> Iterator[Any]:

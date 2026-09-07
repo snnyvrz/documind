@@ -18,6 +18,7 @@ type UploadFormValues = z.infer<typeof uploadSchema>;
 
 export const DocumentUploadForm = () => {
   const inputRef = useRef<HTMLInputElement>(null);
+  const answerAbortRef = useRef<AbortController | null>(null);
   const [document, setDocument] = useState<File>();
   const [isDragging, setIsDragging] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -59,6 +60,8 @@ export const DocumentUploadForm = () => {
     void poll();
     return () => window.clearInterval(interval);
   }, [documentId]);
+
+  useEffect(() => () => answerAbortRef.current?.abort(), []);
 
   const selectDocument = (file: File | undefined) => {
     if (!file) return;
@@ -117,6 +120,9 @@ export const DocumentUploadForm = () => {
 
   const askQuestion = async () => {
     if (!readyDocumentId || !question.trim()) return;
+    answerAbortRef.current?.abort();
+    const abortController = new AbortController();
+    answerAbortRef.current = abortController;
     setIsAsking(true);
     setAnswer("");
     setSources([]);
@@ -125,31 +131,61 @@ export const DocumentUploadForm = () => {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
         body: JSON.stringify({ question }),
+        signal: abortController.signal,
       });
-      if (!response.ok || !response.body) throw new Error("Could not answer the question.");
+      if (!response.ok || !response.body) {
+        const body = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(body?.error ?? "Could not answer the question.");
+      }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let receivedDone = false;
+      let successful = false;
+      let streamError: string | null = null;
+      const processEvent = (value: string) => {
+        const data = value.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+        const type = value.split("\n").find((line) => line.startsWith("event: "))?.slice(7);
+        if (!data) return;
+        const payload = JSON.parse(data) as { ok?: boolean; text?: string; message?: string; sources?: Array<{ chunkIndex: number; text: string }> };
+        if (type === "token") setAnswer((current) => current + (payload.text ?? ""));
+        if (type === "sources") setSources(payload.sources ?? []);
+        if (type === "error") streamError = payload.message ?? "Could not complete the answer.";
+        if (type === "done") {
+          receivedDone = true;
+          successful = payload.ok === true;
+        }
+      };
       while (true) {
         const next = await reader.read();
-        if (next.done) break;
+        if (next.done) {
+          buffer += decoder.decode();
+          if (buffer.trim()) processEvent(buffer);
+          break;
+        }
         buffer += decoder.decode(next.value, { stream: true });
         const events = buffer.split("\n\n");
         buffer = events.pop() ?? "";
         for (const value of events) {
-          const data = value.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
-          const type = value.split("\n").find((line) => line.startsWith("event: "))?.slice(7);
-          if (!data) continue;
-          const payload = JSON.parse(data) as { text?: string; sources?: Array<{ chunkIndex: number; text: string }> };
-          if (type === "token") setAnswer((current) => current + (payload.text ?? ""));
-          if (type === "sources") setSources(payload.sources ?? []);
+          processEvent(value);
         }
       }
+      if (!receivedDone) throw new Error("Answer generation ended unexpectedly.");
+      if (streamError) throw new Error(streamError);
+      if (!successful) throw new Error("Could not complete the answer.");
     } catch (error) {
-      setUploadError(error instanceof Error ? error.message : "Could not answer the question.");
+      if (!abortController.signal.aborted) {
+        setUploadError(error instanceof Error ? error.message : "Could not answer the question.");
+      }
     } finally {
+      if (answerAbortRef.current === abortController) answerAbortRef.current = null;
       setIsAsking(false);
     }
+  };
+
+  const stopAnswer = () => {
+    setUploadError("Answer generation was stopped before completion.");
+    answerAbortRef.current?.abort();
   };
 
   return (
@@ -244,7 +280,7 @@ export const DocumentUploadForm = () => {
               placeholder="What is this document about?"
               className="min-w-0 flex-1 border bg-background px-3 py-2 text-sm"
             />
-            <Button type="button" onClick={() => void askQuestion()} disabled={isAsking || !question.trim()}>{isAsking ? "Answering..." : "Ask"}</Button>
+            <Button type="button" onClick={() => (isAsking ? stopAnswer() : void askQuestion())} disabled={!isAsking && !question.trim()}>{isAsking ? "Stop" : "Ask"}</Button>
           </div>
           {answer && <p className="whitespace-pre-wrap border p-4 text-sm">{answer}</p>}
           {sources.length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Sources</p>{sources.map((source) => <p key={source.chunkIndex} className="border-l-2 pl-3 text-sm text-muted-foreground">Chunk {source.chunkIndex}: {source.text}</p>)}</div>}
