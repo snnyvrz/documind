@@ -1,6 +1,10 @@
 # temporary files
 tmp/
 
+# python cache
+__pycache__/
+*.py[cod]
+
 # uploaded documents
 data/
 
@@ -9,3 +13,4 @@ data/
 
 # .env
 .env
+

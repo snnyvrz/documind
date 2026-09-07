@@ -31,8 +31,11 @@ CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "4000"))
 CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "400"))
 EMBEDDING_BATCH_SIZE = int(os.environ.get("EMBEDDING_BATCH_SIZE", "32"))
 
+if CHUNK_SIZE <= 0 or CHUNK_OVERLAP < 0 or CHUNK_OVERLAP >= CHUNK_SIZE:
+    raise ValueError("CHUNK_SIZE must be positive and CHUNK_OVERLAP must be smaller")
 
-def chunks(text: str) -> list[tuple[str, int, int]]:
+
+def chunks(text: str, page_ranges: list[tuple[int, int, int]] | None = None) -> list[tuple[str, int, int, int, int]]:
     result = []
     start = 0
     while start < len(text):
@@ -44,7 +47,13 @@ def chunks(text: str) -> list[tuple[str, int, int]]:
         value = text[start:end].strip()
         if value:
             value_start = start + len(text[start:end]) - len(text[start:end].lstrip())
-            result.append((value, value_start, value_start + len(value)))
+            value_end = value_start + len(value)
+            page_start, page_end = 1, 1
+            if page_ranges:
+                covered = [page for start_offset, end_offset, page in page_ranges if start_offset < value_end and end_offset > value_start]
+                if covered:
+                    page_start, page_end = min(covered), max(covered)
+            result.append((value, value_start, value_end, page_start, page_end))
         if end >= len(text):
             break
         start = max(end - CHUNK_OVERLAP, start + 1)
@@ -67,7 +76,7 @@ def embed(values: list[str]) -> list[list[float]]:
 
 
 def chat(question: str, contexts: list[Any]) -> Iterator[str]:
-    excerpts = "\n\n".join(f"[Chunk {item.chunk_index}]\n{item.text}" for item in contexts)
+    excerpts = "\n\n".join(f"[Chunk {item.chunk_index}, pages {item.page_start}-{item.page_end}]\n{item.text}" for item in contexts)
     prompt = (
         "You answer questions about a document.\n\n"
         "Use only the document excerpts provided below. If they do not contain "
@@ -77,7 +86,7 @@ def chat(question: str, contexts: list[Any]) -> Iterator[str]:
     )
     with httpx.stream(
         "POST", f"{OLLAMA_URL.rstrip('/')}/api/chat",
-        json={"model": OLLAMA_CHAT_MODEL, "stream": True, "temperature": 0, "messages": [{"role": "user", "content": prompt}]},
+        json={"model": OLLAMA_CHAT_MODEL, "stream": True, "options": {"temperature": 0}, "messages": [{"role": "user", "content": prompt}]},
         timeout=120,
     ) as response:
         response.raise_for_status()
@@ -107,10 +116,18 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
     def Process(self, request: Any, context: grpc.ServicerContext) -> Iterator[Any]:
         try:
             reader = PdfReader(BytesIO(request.pdf))
-            text = "\n\n".join(
-                page.extract_text() or "" for page in reader.pages
-            ).strip()
-            document_chunks = chunks(text)
+            page_texts = [page.extract_text() or "" for page in reader.pages]
+            raw_text = "\n\n".join(page_texts)
+            leading = len(raw_text) - len(raw_text.lstrip())
+            text = raw_text.strip()
+            page_ranges = []
+            offset = 0
+            for page_number, page_text in enumerate(page_texts, start=1):
+                page_ranges.append((max(0, offset - leading), max(0, offset + len(page_text) - leading), page_number))
+                offset += len(page_text) + 2
+            if not text:
+                raise ValueError("PDF contains no extractable text")
+            document_chunks = chunks(text, page_ranges)
         except Exception as error:
             context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
@@ -129,7 +146,7 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
         for batch_index in range(0, len(document_chunks), EMBEDDING_BATCH_SIZE):
             batch = document_chunks[batch_index : batch_index + EMBEDDING_BATCH_SIZE]
             try:
-                vectors = embed([value for value, _, _ in batch])
+                vectors = embed([value for value, _, _, _, _ in batch])
             except Exception as error:
                 context.abort(
                     grpc.StatusCode.UNAVAILABLE,
@@ -145,9 +162,11 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
                             text=value,
                             start_offset=start,
                             end_offset=end,
+                            page_start=page_start,
+                            page_end=page_end,
                             embedding=vector,
                         )
-                        for offset, ((value, start, end), vector) in enumerate(zip(batch, vectors))
+                        for offset, ((value, start, end, page_start, page_end), vector) in enumerate(zip(batch, vectors))
                     ],
                 )
             )

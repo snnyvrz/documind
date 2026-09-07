@@ -284,10 +284,21 @@ Request body:
 
 The response is an SSE stream containing `token` events while the answer is
 generated, followed by a `sources` event with the retrieved chunk text and
-offsets, and a final `done` event. Questions are single-turn and must target a
-completed document. Authentication and user ownership are not implemented yet;
-this endpoint should remain local-only until documents are associated with
-users.
+offsets, page ranges, and a final `done` event. Page ranges use one-based PDF
+page numbers. Questions are single-turn and must target a completed document.
+PDFs without extractable text, including scanned PDFs without an embedded text
+layer, fail processing and cannot be questioned. Authentication and user
+ownership are not implemented yet; this endpoint should remain local-only until
+documents are associated with users.
+
+## RAG Evaluation
+
+The versioned evaluation contract lives in `evals/`. It records reference
+answers, answerability, and supporting page passages independently of chunk
+indexes. The live runner in `scripts/run_rag_eval.py` exercises the public
+upload, processing, and SSE question APIs and writes raw JSON results. Run it
+against a local stack as documented in `evals/README.md`. Live model evaluation
+is intentionally separate from deterministic CI.
 
 ## Configuration
 
@@ -312,6 +323,7 @@ The main API environment variables are:
 | `CHUNK_SIZE` | Chunk size in characters | `4000` |
 | `CHUNK_OVERLAP` | Chunk overlap in characters | `400` |
 | `EMBEDDING_BATCH_SIZE` | Chunks embedded per streamed batch | `32` |
+| `RETRIEVAL_LIMIT` | Number of nearest chunks supplied to answer generation | `5` |
 
 The API and nginx both enforce the 20 MiB upload limit. Keep these values in
 sync if the limit changes.

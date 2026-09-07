@@ -104,10 +104,10 @@ func TestPostgresExpiredLeaseIsReclaimedAndStaleWorkerIsFenced(t *testing.T) {
 	if second.AttemptCount != first.AttemptCount+1 || second.LeaseToken == nil || *second.LeaseToken != "worker-b" {
 		t.Fatalf("reclaimed document = %+v", second)
 	}
-	if err := store.Complete(context.Background(), doc.ID, "worker-a", "stale result", nil); !errors.Is(err, errLeaseLost) {
+	if err := store.Complete(context.Background(), doc.ID, "worker-a", "stale result", 1, nil); !errors.Is(err, errLeaseLost) {
 		t.Fatalf("stale completion error = %v, want lease lost", err)
 	}
-	if err := store.Complete(context.Background(), doc.ID, "worker-b", "current result", nil); err != nil {
+	if err := store.Complete(context.Background(), doc.ID, "worker-b", "current result", 1, nil); err != nil {
 		t.Fatalf("current completion: %v", err)
 	}
 }
@@ -143,7 +143,7 @@ func TestPostgresCompleteRollsBackWhenChunkInsertionFails(t *testing.T) {
 		{ID: mustIntegrationID(t), DocumentID: doc.ID, ChunkIndex: 0, Text: "duplicate", Embedding: vector, CreatedAt: time.Now().UTC()},
 	}
 
-	if err := store.Complete(context.Background(), doc.ID, "worker", "extracted text", chunks); err == nil {
+	if err := store.Complete(context.Background(), doc.ID, "worker", "extracted text", 1, chunks); err == nil {
 		t.Fatal("complete succeeded with duplicate chunk indexes")
 	}
 	result, err := store.Find(context.Background(), doc.ID)

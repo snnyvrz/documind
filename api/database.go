@@ -14,7 +14,7 @@ type documentStore interface {
 	ClaimNext(context.Context, string, time.Duration, int) (*document, error)
 	RenewLease(context.Context, string, string, time.Duration) error
 	Retry(context.Context, string, string, time.Time) error
-	Complete(context.Context, string, string, string, []documentChunk) error
+	Complete(context.Context, string, string, string, uint32, []documentChunk) error
 	Fail(context.Context, string, string, string) error
 	Find(context.Context, string) (*document, error)
 	SearchChunks(context.Context, string, string, int) ([]documentChunk, error)
@@ -29,6 +29,8 @@ type documentChunk struct {
 	Text        string `gorm:"type:text"`
 	StartOffset uint64
 	EndOffset   uint64
+	PageStart   uint32
+	PageEnd     uint32
 	Embedding   string `gorm:"type:vector(768)"`
 	CreatedAt   time.Time
 }
@@ -39,6 +41,7 @@ type document struct {
 	StoredPath        string
 	MIMEType          string
 	Size              int64
+	PageCount         uint32
 	Status            string
 	ExtractedTextPath *string
 	ExtractedText     *string `gorm:"type:text"`
@@ -176,11 +179,11 @@ func (s *postgresDocumentStore) Retry(ctx context.Context, id, leaseToken string
 	return nil
 }
 
-func (s *postgresDocumentStore) Complete(ctx context.Context, id, leaseToken, text string, chunks []documentChunk) error {
+func (s *postgresDocumentStore) Complete(ctx context.Context, id, leaseToken, text string, pageCount uint32, chunks []documentChunk) error {
 	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(&document{}).
 			Where("id = ? AND status = 'processing' AND lease_token = ? AND lease_expires_at > NOW()", id, leaseToken).
-			Updates(map[string]any{"status": "completed", "extracted_text": text, "error_message": nil, "next_attempt_at": nil, "lease_token": nil, "lease_expires_at": nil, "updated_at": time.Now().UTC()})
+			Updates(map[string]any{"status": "completed", "extracted_text": text, "page_count": pageCount, "error_message": nil, "next_attempt_at": nil, "lease_token": nil, "lease_expires_at": nil, "updated_at": time.Now().UTC()})
 		if result.Error != nil {
 			return result.Error
 		}
@@ -222,7 +225,7 @@ func (s *postgresDocumentStore) Find(ctx context.Context, id string) (*document,
 
 func (s *postgresDocumentStore) SearchChunks(ctx context.Context, documentID, embedding string, limit int) ([]documentChunk, error) {
 	var chunks []documentChunk
-	err := s.database.WithContext(ctx).Raw(`SELECT id, document_id, chunk_index, text, start_offset, end_offset, created_at
+	err := s.database.WithContext(ctx).Raw(`SELECT id, document_id, chunk_index, text, start_offset, end_offset, page_start, page_end, created_at
 FROM document_chunks WHERE document_id = ? ORDER BY embedding <=> ?::vector LIMIT ?`, documentID, embedding, limit).Scan(&chunks).Error
 	return chunks, err
 }

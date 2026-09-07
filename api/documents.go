@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	extractorpb "api/proto"
@@ -22,6 +23,15 @@ const maxUploadSize = 20 << 20
 type documentHandler struct {
 	uploadDirectory string
 	store           documentStore
+}
+
+type documentSource struct {
+	ChunkIndex  int    `json:"chunkIndex"`
+	Text        string `json:"text"`
+	StartOffset uint64 `json:"startOffset"`
+	EndOffset   uint64 `json:"endOffset"`
+	PageStart   uint32 `json:"pageStart"`
+	PageEnd     uint32 `json:"pageEnd"`
 }
 
 func newDocumentHandler(uploadDirectory string, store documentStore) *documentHandler {
@@ -138,14 +148,14 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 		vector += fmt.Sprintf("%g", value)
 	}
 	vector += "]"
-	contexts, err := h.store.SearchChunks(c.Request().Context(), document.ID, vector, 5)
+	contexts, err := h.store.SearchChunks(c.Request().Context(), document.ID, vector, retrievalLimit())
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not search document"})
 	}
 	stream, err := client.AnswerQuestion(c.Request().Context(), &extractorpb.AnswerQuestionRequest{Question: request.Question, Contexts: func() []*extractorpb.AnswerContext {
 		result := make([]*extractorpb.AnswerContext, len(contexts))
 		for i := range contexts {
-			result[i] = &extractorpb.AnswerContext{ChunkIndex: uint32(contexts[i].ChunkIndex), Text: contexts[i].Text}
+			result[i] = &extractorpb.AnswerContext{ChunkIndex: uint32(contexts[i].ChunkIndex), Text: contexts[i].Text, PageStart: contexts[i].PageStart, PageEnd: contexts[i].PageEnd}
 		}
 		return result
 	}()})
@@ -171,9 +181,9 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 			flusher.Flush()
 		}
 	}
-	sources := make([]map[string]any, len(contexts))
+	sources := make([]documentSource, len(contexts))
 	for i := range contexts {
-		sources[i] = map[string]any{"chunkIndex": contexts[i].ChunkIndex, "text": contexts[i].Text, "startOffset": contexts[i].StartOffset, "endOffset": contexts[i].EndOffset}
+		sources[i] = documentSource{ChunkIndex: contexts[i].ChunkIndex, Text: contexts[i].Text, StartOffset: contexts[i].StartOffset, EndOffset: contexts[i].EndOffset, PageStart: contexts[i].PageStart, PageEnd: contexts[i].PageEnd}
 	}
 	payload, _ := json.Marshal(map[string]any{"sources": sources})
 	fmt.Fprintf(response, "event: sources\ndata: %s\n\nevent: done\ndata: {}\n\n", payload)
@@ -181,6 +191,18 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 		flusher.Flush()
 	}
 	return nil
+}
+
+func retrievalLimit() int {
+	value := os.Getenv("RETRIEVAL_LIMIT")
+	if value == "" {
+		return 5
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit <= 0 {
+		return 5
+	}
+	return limit
 }
 
 func documentID() (string, error) {

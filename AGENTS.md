@@ -1,18 +1,28 @@
 # AGENTS.md
 
-DocuMind: a PDF-document upload service. Two independent apps under a single repo, wired together only by `compose.yaml`. No monorepo tooling, no CI, no tests in frontend.
+DocuMind: a PDF-document upload and embedding service. The repo contains independent Go, Python, and React apps wired together by `compose.yaml`. CI runs Go unit and PostgreSQL integration tests, Python tests, and frontend build/lint checks. There is no frontend test script.
 
 ## Layout
 
-- `api/` — Go 1.26 backend. Module name is `api` (not a host path). HTTP server on `:1323` using **labstack/echo v5** (note: context params are `*echo.Context`, not v4's value type), GORM + Postgres.
+- `api/` — Go 1.26 backend. Module name is `api` (not a host path). HTTP server on `:1323` using **labstack/echo v5** (note: context params are `*echo.Context`, not v4's value type), GORM + PostgreSQL, and a background worker that calls the processor over gRPC.
+- `document-processor/` — Python 3.14 `uv` project. FastAPI health server on `:8000`, gRPC processor on `:50051`, PDF extraction/chunking, and Ollama embedding/chat integration.
 - `frontend/` — React 19 + Vite 8 + Tailwind v4 + shadcn/ui. **Bun** is the package manager (`bun.lock` committed; never add a `package-lock.json`). Path alias `@/*` → `src/*`. React Compiler is enabled via `@rolldown/plugin-babel` + `reactCompilerPreset` in `vite.config.ts`.
-- `compose.yaml` — full-stack run: Postgres (`db`, port 5432), `api` (1323), `frontend` under nginx (8080, proxies `/documents` → `api`). Uploads land in the `data/` volume.
+- `proto/` — shared protobuf contract; generated bindings are committed under `api/proto/` and `document-processor/generated/`.
+- `compose.yaml` — full-stack run: PostgreSQL (`db`, port 5432), Ollama, `document-processor`, `api` (1323), and `frontend` under nginx (8080, proxies `/documents` → `api`). Uploaded PDFs are bind-mounted from host `data/` to `/data` in the API container; PostgreSQL and Ollama use named volumes.
 
 ## Commands
 
 API (from `api/`):
-- Test: `go test ./...` — runs standalone, uses an in-memory `memoryDocumentStore` (no Postgres needed).
+- Unit tests: `go test ./...` — runs standalone, using an in-memory `memoryDocumentStore` (no Postgres needed).
+- PostgreSQL integration tests: `DATABASE_URL=postgres://documind:documind@localhost:5432/documind?sslmode=disable go test -tags=integration ./...` — requires the Compose `db` service and the `pgvector/pgvector` image.
+- Run locally: `go run .` — requires `api/.env`, PostgreSQL, and a document processor reachable through `DOCUMENT_PROCESSOR_GRPC_URL`.
 - Live reload: `air` (config in `.air.toml`, builds to `api/tmp/main`). Requires Postgres and env; see below.
+
+Document processor (from `document-processor/`):
+- Install locked dependencies: `uv sync --locked`.
+- Run tests: `uv run pytest`.
+- Run the FastAPI health server: `uv run uvicorn service:app --host 0.0.0.0 --port 8000`.
+- Run the gRPC server separately: `uv run python service.py`.
 
 Frontend (from `frontend/`):
 - `bun install` (or `bun install --frozen-lockfile` like the Dockerfile)
@@ -20,10 +30,18 @@ Frontend (from `frontend/`):
 - `bun run build` — `tsc -b && vite build`. `bun run lint` — ESLint. No frontend test script.
 
 Full stack: `docker compose up --build`.
+Stop the stack: `docker compose down`.
+
+CI-equivalent checks:
+- API unit tests: `cd api && go test ./...`.
+- API integration tests: set `DATABASE_URL` and run `cd api && go test -tags=integration ./...`.
+- Processor tests: `cd document-processor && uv sync --locked && uv run pytest`.
+- Frontend checks: `cd frontend && bun install --frozen-lockfile && bun run build && bun run lint`.
 
 ## API local setup
 
-- Copy `api/.env.example` → `api/.env` and start Postgres first: `docker compose up -d db`. `main.go` loads `.env` via godotenv; `DATABASE_URL` is required (panics if unset/unreachable) and `AutoMigrate` runs on startup. `UPLOAD_DIRECTORY` defaults per XDG spec if unset.
+- Copy `api/.env.example` → `api/.env` and start Postgres first: `docker compose up -d db`. `main.go` loads `.env` via godotenv; `DATABASE_URL` is required (panics if unset/unreachable) and `AutoMigrate` runs on startup. `UPLOAD_DIRECTORY` defaults to the repository `data/` directory with the example settings.
+- Start the document processor locally, or set `DOCUMENT_PROCESSOR_GRPC_URL` to another processor instance before running the API. The processor also requires Ollama and the configured embedding/chat models for actual document processing.
 
 ## Gotchas
 

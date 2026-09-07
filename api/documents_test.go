@@ -96,7 +96,7 @@ func (s *memoryDocumentStore) Retry(_ context.Context, id, leaseToken string, ne
 	return errLeaseLost
 }
 
-func (s *memoryDocumentStore) Complete(_ context.Context, id, leaseToken, text string, chunks []documentChunk) error {
+func (s *memoryDocumentStore) Complete(_ context.Context, id, leaseToken, text string, pageCount uint32, chunks []documentChunk) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	for index := range s.documents {
@@ -104,6 +104,7 @@ func (s *memoryDocumentStore) Complete(_ context.Context, id, leaseToken, text s
 		if activeLease(document, id, leaseToken) {
 			document.Status = "completed"
 			document.ExtractedText = &text
+			document.PageCount = pageCount
 			document.LeaseToken = nil
 			document.LeaseExpiresAt = nil
 			s.chunks = append([]documentChunk(nil), chunks...)

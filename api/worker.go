@@ -136,7 +136,7 @@ func processNext(ctx context.Context, uploadDirectory string, store documentStor
 	heartbeatDone := make(chan error, 1)
 	go maintainLease(heartbeatContext, cancelProcessing, store, claimed.ID, leaseToken, config, heartbeatDone)
 
-	text, chunks, processingErr := processDocument(processingContext, uploadDirectory, claimed)
+	text, pageCount, chunks, processingErr := processDocument(processingContext, uploadDirectory, claimed)
 	stopHeartbeat()
 	heartbeatErr := <-heartbeatDone
 	cancelProcessing()
@@ -145,7 +145,7 @@ func processNext(ctx context.Context, uploadDirectory string, store documentStor
 	}
 
 	if processingErr == nil {
-		return store.Complete(ctx, claimed.ID, leaseToken, text, chunks)
+		return store.Complete(ctx, claimed.ID, leaseToken, text, pageCount, chunks)
 	}
 	log.Printf("document worker: document %s attempt %d: %v", claimed.ID, claimed.AttemptCount, processingErr)
 	if processingErr.permanent || claimed.AttemptCount >= config.maxAttempts {
@@ -186,10 +186,10 @@ func retryBackoff(attempt int, config workerConfig) time.Duration {
 	return delay
 }
 
-func processDocument(ctx context.Context, uploadDirectory string, document *document) (string, []documentChunk, *jobError) {
+func processDocument(ctx context.Context, uploadDirectory string, document *document) (string, uint32, []documentChunk, *jobError) {
 	pdf, err := os.ReadFile(filepath.Join(uploadDirectory, document.StoredPath))
 	if err != nil {
-		return "", nil, &jobError{cause: err, message: "could not read uploaded PDF", permanent: true}
+		return "", 0, nil, &jobError{cause: err, message: "could not read uploaded PDF", permanent: true}
 	}
 	connection, err := grpc.NewClient(
 		processorAddress(),
@@ -200,17 +200,18 @@ func processDocument(ctx context.Context, uploadDirectory string, document *docu
 		),
 	)
 	if err != nil {
-		return "", nil, &jobError{cause: err, message: "document processor unavailable"}
+		return "", 0, nil, &jobError{cause: err, message: "document processor unavailable"}
 	}
 	defer connection.Close()
 	stream, err := extractorpb.NewDocumentProcessorClient(connection).Process(ctx, &extractorpb.ProcessRequest{DocumentId: document.ID, Pdf: pdf})
 	if err != nil {
-		return "", nil, processorError(err)
+		return "", 0, nil, processorError(err)
 	}
 	var text string
 	var chunks []documentChunk
 	metadataReceived := false
 	var expectedChunks uint32
+	var pageCount uint32
 	nextBatch := uint32(0)
 	nextChunk := uint32(0)
 	for {
@@ -219,29 +220,33 @@ func processDocument(ctx context.Context, uploadDirectory string, document *docu
 			break
 		}
 		if receiveErr != nil {
-			return "", nil, processorError(receiveErr)
+			return "", 0, nil, processorError(receiveErr)
 		}
 		if metadata := event.GetMetadata(); metadata != nil {
 			if metadataReceived || metadata.EmbeddingDimensions != embeddingDimensions() || metadata.DocumentId != document.ID {
-				return "", nil, &jobError{message: "document processor returned an invalid document", permanent: true}
+				return "", 0, nil, &jobError{message: "document processor returned an invalid document", permanent: true}
 			}
 			text = metadata.Text
 			expectedChunks = metadata.ChunkCount
+			pageCount = metadata.PageCount
 			metadataReceived = true
 			continue
 		}
 		batch := event.GetChunkBatch()
 		if batch == nil || !metadataReceived || batch.BatchIndex != nextBatch {
-			return "", nil, &jobError{message: "document processor returned invalid chunk batches", permanent: true}
+			return "", 0, nil, &jobError{message: "document processor returned invalid chunk batches", permanent: true}
 		}
 		nextBatch++
 		for _, chunk := range batch.Chunks {
 			if chunk.Index != nextChunk {
-				return "", nil, &jobError{message: "document processor returned invalid chunk indexes", permanent: true}
+				return "", 0, nil, &jobError{message: "document processor returned invalid chunk indexes", permanent: true}
 			}
 			nextChunk++
 			if len(chunk.Embedding) != int(embeddingDimensions()) {
-				return "", nil, &jobError{message: "document processor returned an invalid embedding", permanent: true}
+				return "", 0, nil, &jobError{message: "document processor returned an invalid embedding", permanent: true}
+			}
+			if chunk.PageStart == 0 || chunk.PageEnd < chunk.PageStart || chunk.PageEnd > pageCount {
+				return "", 0, nil, &jobError{message: "document processor returned invalid page metadata", permanent: true}
 			}
 			values := "["
 			for index, value := range chunk.Embedding {
@@ -253,18 +258,18 @@ func processDocument(ctx context.Context, uploadDirectory string, document *docu
 			values += "]"
 			chunkID, idErr := documentID()
 			if idErr != nil {
-				return "", nil, &jobError{cause: idErr, message: "could not create chunk ID"}
+				return "", 0, nil, &jobError{cause: idErr, message: "could not create chunk ID"}
 			}
-			chunks = append(chunks, documentChunk{ID: chunkID, DocumentID: document.ID, ChunkIndex: int(chunk.Index), Text: chunk.Text, StartOffset: chunk.StartOffset, EndOffset: chunk.EndOffset, Embedding: values, CreatedAt: time.Now().UTC()})
+			chunks = append(chunks, documentChunk{ID: chunkID, DocumentID: document.ID, ChunkIndex: int(chunk.Index), Text: chunk.Text, StartOffset: chunk.StartOffset, EndOffset: chunk.EndOffset, PageStart: chunk.PageStart, PageEnd: chunk.PageEnd, Embedding: values, CreatedAt: time.Now().UTC()})
 		}
 	}
 	if !metadataReceived {
-		return "", nil, &jobError{message: "document processor returned no metadata", permanent: true}
+		return "", 0, nil, &jobError{message: "document processor returned no metadata", permanent: true}
 	}
 	if uint32(len(chunks)) != expectedChunks {
-		return "", nil, &jobError{message: "document processor returned an incomplete result", permanent: true}
+		return "", 0, nil, &jobError{message: "document processor returned an incomplete result", permanent: true}
 	}
-	return text, chunks, nil
+	return text, pageCount, chunks, nil
 }
 
 func processorError(err error) *jobError {

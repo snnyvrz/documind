@@ -43,10 +43,10 @@ func TestClaimRecoversExpiredLeaseAndFencesStaleWorker(t *testing.T) {
 	if claimed.AttemptCount != 2 || claimed.LeaseToken == nil || *claimed.LeaseToken != "new-token" {
 		t.Fatalf("claimed document = %+v", claimed)
 	}
-	if err := store.Complete(context.Background(), claimed.ID, oldToken, "stale", nil); !errors.Is(err, errLeaseLost) {
+	if err := store.Complete(context.Background(), claimed.ID, oldToken, "stale", 1, nil); !errors.Is(err, errLeaseLost) {
 		t.Fatalf("stale completion error = %v, want lease lost", err)
 	}
-	if err := store.Complete(context.Background(), claimed.ID, "new-token", "current", nil); err != nil {
+	if err := store.Complete(context.Background(), claimed.ID, "new-token", "current", 1, nil); err != nil {
 		t.Fatalf("current completion: %v", err)
 	}
 	result, err := store.Find(context.Background(), claimed.ID)
