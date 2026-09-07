@@ -137,12 +137,15 @@ RETURNING *`, maxAttempts, leaseToken, leaseDuration.Milliseconds()).Scan(&resul
 			return err
 		}
 		if result.ID == "" {
-			return gorm.ErrRecordNotFound
+			return nil
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	if result.ID == "" {
+		return nil, gorm.ErrRecordNotFound
 	}
 	return &result, nil
 }

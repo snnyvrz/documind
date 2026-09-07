@@ -3,6 +3,7 @@ module api
 go 1.26
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/joho/godotenv v1.5.1
 	github.com/labstack/echo/v5 v5.3.0
 	google.golang.org/grpc v1.79.2

@@ -113,6 +113,17 @@ cd api
 go test ./...
 ```
 
+Run the PostgreSQL integration tests with the Compose database running:
+
+```sh
+DATABASE_URL=postgres://documind:documind@localhost:5432/documind?sslmode=disable \
+  go test -tags=integration ./...
+```
+
+The integration tests use the `pgvector/pgvector` PostgreSQL image because the
+production schema requires the `vector` extension. They are skipped when
+`DATABASE_URL` is unset.
+
 Run the API locally:
 
 1. Start PostgreSQL:
