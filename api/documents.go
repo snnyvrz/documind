@@ -35,6 +35,16 @@ type documentSource struct {
 	PageEnd     uint32 `json:"pageEnd"`
 }
 
+type documentSummary struct {
+	DocumentID string    `json:"documentId"`
+	Filename   string    `json:"filename"`
+	Status     string    `json:"status"`
+	PageCount  uint32    `json:"pageCount"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+	Error      *string   `json:"error,omitempty"`
+}
+
 func newDocumentHandler(uploadDirectory string, store documentStore) *documentHandler {
 	return &documentHandler{uploadDirectory: uploadDirectory, store: store}
 }
@@ -99,12 +109,24 @@ func (h *documentHandler) Upload(c *echo.Context) error {
 	return c.JSON(http.StatusAccepted, map[string]string{"documentId": documentID, "status": document.Status})
 }
 
+func (h *documentHandler) List(c *echo.Context) error {
+	documents, err := h.store.List(context.Background())
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not list documents"})
+	}
+	result := make([]documentSummary, len(documents))
+	for i, document := range documents {
+		result[i] = documentSummary{DocumentID: document.ID, Filename: document.OriginalFilename, Status: document.Status, PageCount: document.PageCount, CreatedAt: document.CreatedAt, UpdatedAt: document.UpdatedAt, Error: document.ErrorMessage}
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
 func (h *documentHandler) Get(c *echo.Context) error {
 	document, err := h.store.Find(context.Background(), c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
 	}
-	response := map[string]any{"documentId": document.ID, "filename": document.OriginalFilename, "status": document.Status, "attemptCount": document.AttemptCount}
+	response := map[string]any{"documentId": document.ID, "filename": document.OriginalFilename, "status": document.Status, "pageCount": document.PageCount, "attemptCount": document.AttemptCount}
 	if document.NextAttemptAt != nil {
 		response["nextAttemptAt"] = document.NextAttemptAt
 	}
@@ -115,6 +137,36 @@ func (h *documentHandler) Get(c *echo.Context) error {
 		response["error"] = *document.ErrorMessage
 	}
 	return c.JSON(http.StatusOK, response)
+}
+
+func (h *documentHandler) Chunks(c *echo.Context) error {
+	if _, err := h.store.Find(context.Background(), c.Param("id")); err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
+	}
+	chunks, err := h.store.ListChunks(context.Background(), c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not load document chunks"})
+	}
+	result := make([]documentSource, len(chunks))
+	for i, chunk := range chunks {
+		result[i] = documentSource{ChunkIndex: chunk.ChunkIndex, Text: chunk.Text, StartOffset: chunk.StartOffset, EndOffset: chunk.EndOffset, PageStart: chunk.PageStart, PageEnd: chunk.PageEnd}
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
+func (h *documentHandler) Delete(c *echo.Context) error {
+	id := c.Param("id")
+	document, err := h.store.Find(context.Background(), id)
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
+	}
+	if err := h.store.Delete(context.Background(), id); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not delete document"})
+	}
+	if err := os.RemoveAll(filepath.Join(h.uploadDirectory, filepath.Dir(document.StoredPath))); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "document metadata deleted but file cleanup failed"})
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 func (h *documentHandler) Ask(c *echo.Context) error {

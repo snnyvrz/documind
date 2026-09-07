@@ -43,7 +43,14 @@ PDF processing is asynchronous:
    become `failed` after five attempts.
 9. Expired processing leases are reclaimed automatically, so a worker or API
    crash cannot leave a document permanently stuck in `processing`.
-10. The frontend polls `GET /documents/{id}` and displays the extracted text.
+10. The frontend polls `GET /documents/{id}` sequentially until processing finishes,
+    and cancels polling when another document is selected.
+11. The frontend lists completed and in-progress documents, lets users reopen or
+    delete previous documents, and displays extracted text by chunk.
+12. Questions stream answers over SSE. Switching documents or stopping an answer
+    cancels the active stream, and pressing Enter while a stream is active is ignored.
+13. Source citations show page ranges and scroll to and briefly highlight the matching
+    extracted-text chunk in the current document.
 
 The document processor handles PDFs with embedded text. Scanned PDFs require an
 OCR implementation, which can be added later.
@@ -210,6 +217,12 @@ bun run build
 bun run lint
 ```
 
+The same mocked workflow is available through the repository Make target:
+
+```sh
+bun run test:e2e
+```
+
 Run the deterministic mocked browser workflow tests:
 
 ```sh
@@ -238,8 +251,7 @@ KEEP_STACK=1 make test-e2e-production
 ```
 
 The mocked suite is deterministic and does not require the backend, database,
-processor, or Ollama. The existing lint configuration has Fast Refresh warnings
-in some pre-existing shared components.
+processor, or Ollama. The production-like suite exercises the full Compose stack.
 
 ## HTTP API
 
@@ -261,6 +273,16 @@ Example response:
   "status": "queued"
 }
 ```
+
+### List documents
+
+```http
+GET /documents
+```
+
+Returns document summaries ordered from newest to oldest. Each summary includes
+the document ID, original filename, processing status, page count when available,
+timestamps, and a processing error when applicable.
 
 ### Get document status
 
@@ -287,6 +309,7 @@ Completed response:
   "documentId": "ef77c3f5-2345-462c-a693-789588855a14",
   "filename": "document.pdf",
   "status": "completed",
+  "pageCount": 3,
   "attemptCount": 1,
   "text": "Extracted document text..."
 }
@@ -295,6 +318,26 @@ Completed response:
 Possible statuses are `queued`, `processing`, `completed`, and `failed`.
 `attemptCount` reports how many processing attempts have started, and
 `nextAttemptAt` is present while a retry is waiting for its backoff delay.
+
+### List extracted chunks
+
+```http
+GET /documents/{documentId}/chunks
+```
+
+Returns the stored extracted-text chunks with their `chunkIndex`, text offsets,
+page ranges, and text. The frontend uses `chunkIndex` to give each chunk a stable
+in-page target for citation navigation.
+
+### Delete a document
+
+```http
+DELETE /documents/{documentId}
+```
+
+Deletes the document, its stored chunks, and its uploaded file directory. The
+endpoint returns `204 No Content` on success and `404 Not Found` when the document
+does not exist.
 
 ### Ask a question
 
@@ -314,6 +357,10 @@ The response is an SSE stream containing `token` events while the answer is
 generated, followed by a `sources` event with the retrieved chunk text and
 offsets, page ranges, and a final `done` event. Page ranges use one-based PDF
 page numbers. Questions are single-turn and must target a completed document.
+The frontend prevents concurrent questions and cancels the stream when the user
+stops it or switches documents. Citations use their `chunkIndex` for in-app
+navigation to the matching extracted-text chunk; page ranges provide citation
+context and are not external PDF links.
 PDFs without extractable text, including scanned PDFs without an embedded text
 layer, fail processing and cannot be questioned. Authentication and user
 ownership are not implemented yet; this endpoint should remain local-only until

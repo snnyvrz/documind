@@ -65,7 +65,10 @@ func newServer(uploadDirectory string, store documentStore) *echo.Echo {
 
 	handler := newDocumentHandler(uploadDirectory, store)
 	e.POST("/documents", handler.Upload)
+	e.GET("/documents", handler.List)
 	e.GET("/documents/:id", handler.Get)
+	e.GET("/documents/:id/chunks", handler.Chunks)
+	e.DELETE("/documents/:id", handler.Delete)
 	e.POST("/documents/:id/questions", handler.Ask)
 
 	return e

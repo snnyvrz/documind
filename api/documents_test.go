@@ -29,6 +29,24 @@ func (s *memoryDocumentStore) Create(_ context.Context, document document) error
 	return nil
 }
 
+func (s *memoryDocumentStore) List(_ context.Context) ([]document, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return append([]document(nil), s.documents...), nil
+}
+
+func (s *memoryDocumentStore) Delete(_ context.Context, id string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for i := range s.documents {
+		if s.documents[i].ID == id {
+			s.documents = append(s.documents[:i], s.documents[i+1:]...)
+			return nil
+		}
+	}
+	return gorm.ErrRecordNotFound
+}
+
 func (s *memoryDocumentStore) ClaimNext(_ context.Context, leaseToken string, leaseDuration time.Duration, maxAttempts int) (*document, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -148,6 +166,18 @@ func (s *memoryDocumentStore) Find(_ context.Context, id string) (*document, err
 
 func (s *memoryDocumentStore) SearchChunks(_ context.Context, _ string, _ string, _ int) ([]documentChunk, error) {
 	return nil, nil
+}
+
+func (s *memoryDocumentStore) ListChunks(_ context.Context, documentID string) ([]documentChunk, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	result := make([]documentChunk, 0)
+	for _, chunk := range s.chunks {
+		if chunk.DocumentID == documentID {
+			result = append(result, chunk)
+		}
+	}
+	return result, nil
 }
 
 func TestUploadPDF(t *testing.T) {

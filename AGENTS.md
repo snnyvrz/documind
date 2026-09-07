@@ -1,12 +1,12 @@
 # AGENTS.md
 
-DocuMind: a PDF-document upload and embedding service. The repo contains independent Go, Python, and React apps wired together by `compose.yaml`. CI runs Go unit and PostgreSQL integration tests, Python tests, and frontend build/lint checks. There is no frontend test script.
+DocuMind: a PDF-document upload and embedding service. The repo contains independent Go, Python, and React apps wired together by `compose.yaml`. CI runs Go unit and PostgreSQL integration tests, Python tests, and frontend build/lint checks. The frontend also has Playwright workflow tests.
 
 ## Layout
 
 - `api/` — Go 1.26 backend. Module name is `api` (not a host path). HTTP server on `:1323` using **labstack/echo v5** (note: context params are `*echo.Context`, not v4's value type), GORM + PostgreSQL, and a background worker that calls the processor over gRPC.
 - `document-processor/` — Python 3.14 `uv` project. FastAPI health server on `:8000`, gRPC processor on `:50051`, PDF extraction/chunking, and Ollama embedding/chat integration.
-- `frontend/` — React 19 + Vite 8 + Tailwind v4 + shadcn/ui. **Bun** is the package manager (`bun.lock` committed; never add a `package-lock.json`). Path alias `@/*` → `src/*`. React Compiler is enabled via `@rolldown/plugin-babel` + `reactCompilerPreset` in `vite.config.ts`.
+- `frontend/` — React 19 + Vite 8 + Tailwind v4 + shadcn/ui. **Bun** is the package manager (`bun.lock` committed; never add a `package-lock.json`). Path alias `@/*` → `src/*`. React Compiler is enabled via `@rolldown/plugin-babel` + `reactCompilerPreset` in `vite.config.ts`. Document polling and answer SSE streaming live in cancellation-aware hooks; document citations navigate to extracted-text chunks in the page.
 - `proto/` — shared protobuf contract; generated bindings are committed under `api/proto/` and `document-processor/generated/`.
 - `compose.yaml` — full-stack run: PostgreSQL (`db`, port 5432), Ollama, `document-processor`, `api` (1323), and `frontend` under nginx (8080, proxies `/documents` → `api`). Uploaded PDFs are bind-mounted from host `data/` to `/data` in the API container; PostgreSQL and Ollama use named volumes.
 
@@ -27,7 +27,10 @@ Document processor (from `document-processor/`):
 Frontend (from `frontend/`):
 - `bun install` (or `bun install --frozen-lockfile` like the Dockerfile)
 - `bun run dev` — Vite dev server, proxies `/documents` → `http://127.0.0.1:1323`, so the API must be running locally.
-- `bun run build` — `tsc -b && vite build`. `bun run lint` — ESLint. No frontend test script.
+- `bun run build` — `tsc -b && vite build`.
+- `bun run lint` — ESLint.
+- `bun run test:e2e` — deterministic mocked Playwright workflows; no backend or processor required.
+- `bun run test:e2e:production` — full-stack Playwright workflow through Compose; requires Docker, PostgreSQL, the processor, Ollama, and configured models.
 
 Full stack: `docker compose up --build`.
 Stop the stack: `docker compose down`.
@@ -37,6 +40,7 @@ CI-equivalent checks:
 - API integration tests: set `DATABASE_URL` and run `cd api && go test -tags=integration ./...`.
 - Processor tests: `cd document-processor && uv sync --locked && uv run python -m pytest`.
 - Frontend checks: `cd frontend && bun install --frozen-lockfile && bun run build && bun run lint`.
+- Mocked frontend workflow: `cd frontend && bun run test:e2e`.
 
 ## API local setup
 
@@ -48,4 +52,9 @@ CI-equivalent checks:
 - Tailwind is v4: CSS-first config (`@import "tailwindcss"` in `src/index.css`), `@tailwindcss/vite` plugin, no `tailwind.config.*` file.
 - shadcn/ui uses registry style `base-rhea` (`components.json`); shadcn components live in `src/components/ui/`.
 - API upload limit is 20 MB (`http.MaxBytesReader`) and PDFs are validated by `%PDF-` magic bytes — keep this in sync with nginx `client_max_body_size` (currently local to the container nginx config).
+- Document routes are `POST /documents`, `GET /documents`, `GET /documents/:id`, `GET /documents/:id/chunks`, `DELETE /documents/:id`, and `POST /documents/:id/questions`.
+- Document selection is a cancellation boundary: switching or deleting a document must abort its status polling and answer stream and clear answer, sources, extracted text, and citation highlights.
+- Question submission needs an in-flight guard. Enter and button actions must not start a second answer stream while one is active.
+- `GET /documents/:id/chunks` exposes stored chunk metadata for in-app citation navigation. Citations scroll to `chunk-{chunkIndex}` targets; they do not open the original PDF.
+- Deleting a document removes its database chunks and uploaded `documents/<id>/` directory.
 - `data/`, `api/.env`, and `api/tmp/` are gitignored working-state (uploads, local env, air build artifacts).

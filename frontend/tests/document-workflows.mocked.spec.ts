@@ -48,6 +48,12 @@ test.describe("mocked API document workflows", () => {
         ].join(""),
       });
     });
+    await page.route("**/documents/mock-document-id/chunks", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify([{ chunkIndex: 0, text: "Document processing and retrieval.", pageStart: 1, pageEnd: 1 }]),
+      });
+    });
 
     await page.goto("/");
     await page.locator('input[type="file"]').setInputFiles(fixture);

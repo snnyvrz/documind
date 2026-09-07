@@ -11,12 +11,15 @@ import (
 
 type documentStore interface {
 	Create(context.Context, document) error
+	List(context.Context) ([]document, error)
+	Delete(context.Context, string) error
 	ClaimNext(context.Context, string, time.Duration, int) (*document, error)
 	RenewLease(context.Context, string, string, time.Duration) error
 	Retry(context.Context, string, string, time.Time) error
 	Complete(context.Context, string, string, string, uint32, []documentChunk) error
 	Fail(context.Context, string, string, string) error
 	Find(context.Context, string) (*document, error)
+	ListChunks(context.Context, string) ([]documentChunk, error)
 	SearchChunks(context.Context, string, string, int) ([]documentChunk, error)
 }
 
@@ -105,6 +108,28 @@ ON documents (lease_expires_at, created_at, id) WHERE status = 'processing'`).Er
 
 func (s *postgresDocumentStore) Create(ctx context.Context, document document) error {
 	return s.database.WithContext(ctx).Create(&document).Error
+}
+
+func (s *postgresDocumentStore) List(ctx context.Context) ([]document, error) {
+	var result []document
+	err := s.database.WithContext(ctx).Order("created_at DESC").Find(&result).Error
+	return result, err
+}
+
+func (s *postgresDocumentStore) Delete(ctx context.Context, id string) error {
+	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("document_id = ?", id).Delete(&documentChunk{}).Error; err != nil {
+			return err
+		}
+		result := tx.Delete(&document{}, "id = ?", id)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
 }
 
 func (s *postgresDocumentStore) ClaimNext(ctx context.Context, leaseToken string, leaseDuration time.Duration, maxAttempts int) (*document, error) {
@@ -221,6 +246,12 @@ func (s *postgresDocumentStore) Find(ctx context.Context, id string) (*document,
 		return nil, err
 	}
 	return &result, nil
+}
+
+func (s *postgresDocumentStore) ListChunks(ctx context.Context, documentID string) ([]documentChunk, error) {
+	var chunks []documentChunk
+	err := s.database.WithContext(ctx).Where("document_id = ?", documentID).Order("chunk_index ASC").Find(&chunks).Error
+	return chunks, err
 }
 
 func (s *postgresDocumentStore) SearchChunks(ctx context.Context, documentID, embedding string, limit int) ([]documentChunk, error) {
