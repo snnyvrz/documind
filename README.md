@@ -46,11 +46,10 @@ PDF processing is asynchronous:
 10. The frontend polls `GET /documents/{id}` sequentially until processing finishes,
     and cancels polling when another document is selected.
 11. The frontend lists completed and in-progress documents, lets users reopen or
-    delete previous documents, and displays extracted text by chunk.
-12. Questions stream answers over SSE. Switching documents or stopping an answer
-    cancels the active stream, and pressing Enter while a stream is active is ignored.
-13. Source citations show page ranges and scroll to and briefly highlight the matching
-    extracted-text chunk in the current document.
+    delete previous documents, and asks questions about completed documents.
+12. Questions stream answers over SSE. The frontend displays only the generated
+    answer; switching documents or stopping an answer cancels the active stream,
+    and pressing Enter while a stream is active is ignored.
 
 The document processor handles PDFs with embedded text. Scanned PDFs require an
 OCR implementation, which can be added later.
@@ -326,8 +325,8 @@ GET /documents/{documentId}/chunks
 ```
 
 Returns the stored extracted-text chunks with their `chunkIndex`, text offsets,
-page ranges, and text. The frontend uses `chunkIndex` to give each chunk a stable
-in-page target for citation navigation.
+page ranges, and text. The current frontend does not fetch or render this data,
+but the endpoint remains available for API consumers.
 
 ### Delete a document
 
@@ -354,19 +353,18 @@ Request body:
 ```
 
 The response is an SSE stream containing `token` events while the answer is
-generated, followed by a `sources` event with the retrieved chunk text and
-offsets, page ranges, and a final `done` event. Page ranges use one-based PDF
-page numbers. Questions are single-turn and must target a completed document.
-The frontend prevents concurrent questions and cancels the stream when the user
-stops it or switches documents. Citations use their `chunkIndex` for in-app
-navigation to the matching extracted-text chunk; page ranges provide citation
-context and are not external PDF links.
+generated, optionally followed by a `sources` event with retrieved chunk text,
+offsets, and page ranges, and a final `done` event. Page ranges use one-based
+PDF page numbers. Questions are single-turn and must target a completed
+document. The frontend prevents concurrent questions, displays the generated
+answer only, and cancels the stream when the user stops it or switches
+documents. Source metadata remains part of the API stream for API consumers.
 PDFs without extractable text, including scanned PDFs without an embedded text
 layer, fail processing and cannot be questioned. Document routes require an
  JWT cookie. The API validates the configured issuer and expiry and
-uses the token `sub` claim as the immutable document owner. Reads, chunk retrieval,
-deletion, and questions are owner-scoped; unauthorized IDs are reported as not
-found.
+uses the token `sub` claim as the immutable document owner. Reads, chunk
+retrieval, deletion, and questions are owner-scoped; unauthorized IDs are
+reported as not found.
 
 Initial per-owner limits are 10 GiB and 1,000 documents, 10 uploads per hour, 2
 active answer generations, and 100 answer requests per UTC day. Uploads remain

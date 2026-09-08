@@ -6,7 +6,7 @@ DocuMind: a PDF-document upload and embedding service. The repo contains indepen
 
 - `api/` — Go 1.26 backend. Module name is `api` (not a host path). HTTP server on `:1323` using **labstack/echo v5** (note: context params are `*echo.Context`, not v4's value type), GORM + PostgreSQL, and a background worker that calls the processor over gRPC.
 - `document-processor/` — Python 3.14 `uv` project. FastAPI health server on `:8000`, gRPC processor on `:50051`, PDF extraction/chunking, and Ollama embedding/chat integration.
-- `frontend/` — React 19 + Vite 8 + Tailwind v4 + shadcn/ui. **Bun** is the package manager (`bun.lock` committed; never add a `package-lock.json`). Path alias `@/*` → `src/*`. React Compiler is enabled via `@rolldown/plugin-babel` + `reactCompilerPreset` in `vite.config.ts`. Document polling and answer SSE streaming live in cancellation-aware hooks; document citations navigate to extracted-text chunks in the page.
+- `frontend/` — React 19 + Vite 8 + Tailwind v4 + shadcn/ui. **Bun** is the package manager (`bun.lock` committed; never add a `package-lock.json`). Path alias `@/*` → `src/*`. React Compiler is enabled via `@rolldown/plugin-babel` + `reactCompilerPreset` in `vite.config.ts`. Document polling and answer SSE streaming live in cancellation-aware hooks; the current UI displays the generated answer without rendering extracted text, chunks, or source citations.
 - `proto/` — shared protobuf contract; generated bindings are committed under `api/proto/` and `document-processor/generated/`.
 - `compose.yaml` — full-stack run: PostgreSQL (`db`, port 5432), Ollama, `document-processor`, `api` (1323), and `frontend` under nginx (8080, proxies `/documents` → `api`). Uploaded PDFs are bind-mounted from host `data/` to `/data` in the API container; PostgreSQL and Ollama use named volumes.
 
@@ -53,8 +53,8 @@ CI-equivalent checks:
 - shadcn/ui uses registry style `base-rhea` (`components.json`); shadcn components live in `src/components/ui/`.
 - API upload limit is 20 MB (`http.MaxBytesReader`) and PDFs are validated by `%PDF-` magic bytes — keep this in sync with nginx `client_max_body_size` (currently local to the container nginx config).
 - Document routes are `POST /documents`, `GET /documents`, `GET /documents/:id`, `GET /documents/:id/chunks`, `DELETE /documents/:id`, and `POST /documents/:id/questions`.
-- Document selection is a cancellation boundary: switching or deleting a document must abort its status polling and answer stream and clear answer, sources, extracted text, and citation highlights.
+- Document selection is a cancellation boundary: switching or deleting a document must abort its status polling and answer stream and clear the current answer.
 - Question submission needs an in-flight guard. Enter and button actions must not start a second answer stream while one is active.
-- `GET /documents/:id/chunks` exposes stored chunk metadata for in-app citation navigation. Citations scroll to `chunk-{chunkIndex}` targets; they do not open the original PDF.
+- `GET /documents/:id/chunks` exposes stored chunk metadata for API consumers, but the current frontend does not fetch or render those chunks.
 - Deleting a document removes its database chunks and uploaded `documents/<id>/` directory.
 - `data/`, `api/.env`, and `api/tmp/` are gitignored working-state (uploads, local env, air build artifacts).

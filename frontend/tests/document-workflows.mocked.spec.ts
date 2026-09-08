@@ -64,14 +64,48 @@ test.describe("mocked API document workflows", () => {
     await page.locator('input[type="file"]').setInputFiles(fixture);
     await page.getByRole("button", { name: "Upload document" }).click();
 
-    await expect(page.getByText("Document processed successfully.")).toBeVisible();
-    await expect(page.getByText("Extracted text from the mocked document.")).toBeVisible();
+    await expect(page.getByText("Document ready")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Ask about this document" })).toBeVisible();
 
     await page.getByPlaceholder("What is this document about?").fill("What does it explain?");
     await page.getByRole("button", { name: "Ask" }).click();
 
     await expect(page.getByText("The document explains document processing.")).toBeVisible();
-    await expect(page.getByText("Chunk 0: Document processing and retrieval.")).toBeVisible();
+    await expect(page.getByText("Extracted text from the mocked document.")).not.toBeVisible();
+    await expect(page.getByText("Document processing and retrieval.")).not.toBeVisible();
+  });
+
+  test("confirms document deletion in a modal", async ({ page }) => {
+    await page.route("**/documents", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify([{ documentId: "document-to-delete", filename: "old-report.pdf", status: "completed", pageCount: 2, createdAt: new Date().toISOString() }]),
+        });
+        return;
+      }
+      await route.continue();
+    });
+    await page.route("**/documents/document-to-delete", async (route) => {
+      if (route.request().method() === "DELETE") {
+        await route.fulfill({ status: 204 });
+        return;
+      }
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ documentId: "document-to-delete", filename: "old-report.pdf", status: "completed", pageCount: 2 }),
+      });
+    });
+
+    await page.goto("/");
+    await expect(page.getByText("old-report.pdf")).toBeVisible();
+    await page.getByRole("button", { name: "Delete old-report.pdf" }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await expect(page.getByText("This will permanently remove")).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByRole("dialog")).not.toBeVisible();
+    await page.getByRole("button", { name: "Delete old-report.pdf" }).click();
+    await page.getByRole("button", { name: "Delete document" }).click();
+    await expect(page.getByText("old-report.pdf")).not.toBeVisible();
   });
 });

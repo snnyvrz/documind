@@ -8,7 +8,7 @@ test("production-like: uploads a PDF and asks a question", async ({ page }) => {
   await page.locator('input[type="file"]').setInputFiles(fixture);
   await page.getByRole("button", { name: "Upload document" }).click();
 
-  await expect(page.getByText("Document processed successfully.")).toBeVisible({ timeout: 5 * 60 * 1000 });
+  await expect(page.getByText("Document ready")).toBeVisible({ timeout: 5 * 60 * 1000 });
   await expect(page.getByText("DocuMind workflow test document.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Ask about this document" })).toBeVisible();
 
