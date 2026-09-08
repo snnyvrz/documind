@@ -1,8 +1,14 @@
 import { ThemeProvider } from "@/components/theme-provider";
 import { Header } from "@/components/header";
 import { DocumentUploadForm } from "@/components/document-upload-form";
+import { useAuth } from "@/auth/auth-context";
+import { LoginPage, RegisterPage } from "@/pages/login-page";
 
 function App() {
+  const { status } = useAuth();
+  const path = window.location.pathname;
+  if (status === "loading") return <div className="flex min-h-screen items-center justify-center text-sm text-muted-foreground">Checking your session...</div>;
+  if (status === "unauthenticated") return path === "/register" ? <RegisterPage /> : <LoginPage />;
   return (
     <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
       <Header />

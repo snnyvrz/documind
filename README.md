@@ -362,9 +362,34 @@ stops it or switches documents. Citations use their `chunkIndex` for in-app
 navigation to the matching extracted-text chunk; page ranges provide citation
 context and are not external PDF links.
 PDFs without extractable text, including scanned PDFs without an embedded text
-layer, fail processing and cannot be questioned. Authentication and user
-ownership are not implemented yet; this endpoint should remain local-only until
-documents are associated with users.
+layer, fail processing and cannot be questioned. Document routes require an
+ JWT cookie. The API validates the configured issuer and expiry and
+uses the token `sub` claim as the immutable document owner. Reads, chunk retrieval,
+deletion, and questions are owner-scoped; unauthorized IDs are reported as not
+found.
+
+Initial per-owner limits are 10 GiB and 1,000 documents, 10 uploads per hour, 2
+active answer generations, and 100 answer requests per UTC day. Uploads remain
+limited to 20 MiB and questions to 4,000 characters. Quota rejection returns 429;
+request-size rejection returns 413. The API exposes `/health` for liveness, `/ready`
+for readiness, and `/metrics` in Prometheus text format. Processor readiness
+requires Ollama plus both configured embedding and chat models. Existing documents
+must be explicitly assigned an owner before enabling authentication.
+
+Browser authentication uses local email/password accounts. `POST /auth/register`
+and `POST /auth/login` issue an HTTP-only JWT cookie, `/auth/session` exposes the
+current user, and `POST /auth/logout` clears the cookie. JWTs are never exposed
+to frontend JavaScript or stored in browser storage. Configure `AUTH_JWT_SECRET`
+with at least 32 random characters for shared deployments.
+
+For local Compose development, `AUTH_MODE=development` uses the fixed local
+principal only for in-memory unit tests. The Compose API uses the configured JWT
+secret and supports account registration.
+
+When upgrading a database created before ownership was enabled, set
+`LEGACY_DOCUMENT_OWNER` to an explicitly chosen operator subject. The startup
+migration assigns that owner only to rows without an owner and then enforces the
+non-null constraint. Do not use `local-dev` for a shared deployment.
 
 ## RAG Evaluation
 

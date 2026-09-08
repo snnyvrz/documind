@@ -92,3 +92,16 @@ def test_chat_places_temperature_in_ollama_options() -> None:
     payload = stream.call_args.kwargs["json"]
     assert payload["options"] == {"temperature": 0}
     assert "temperature" not in payload
+
+
+def test_ready_checks_models_with_post() -> None:
+    import service
+
+    responses = [Mock(status_code=200), Mock(status_code=200)]
+    with patch("service.httpx.post", side_effect=responses) as post:
+        response = service.ready()
+
+    assert response.status_code == 200
+    assert post.call_count == 2
+    assert all(call.args[0].endswith("/api/show") for call in post.call_args_list)
+    assert all(call.kwargs["json"]["name"] for call in post.call_args_list)

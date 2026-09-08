@@ -107,18 +107,30 @@ func environmentDuration(name string, fallback time.Duration) (time.Duration, er
 	return result, nil
 }
 
-func startWorker(uploadDirectory string, store documentStore, config workerConfig) {
+func startWorker(ctx context.Context, uploadDirectory string, store documentStore, config workerConfig) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for {
-			err := processNext(context.Background(), uploadDirectory, store, config)
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			err := processNext(ctx, uploadDirectory, store, config)
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				log.Printf("document worker: %v", err)
 			}
 			if err != nil {
-				time.Sleep(config.pollInterval)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(config.pollInterval):
+				}
 			}
 		}
 	}()
+	return done
 }
 
 func processNext(ctx context.Context, uploadDirectory string, store documentStore, config workerConfig) error {

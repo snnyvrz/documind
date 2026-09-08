@@ -8,11 +8,13 @@ import os
 import json
 import httpx
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from pypdf import PdfReader
 
 from generated import extractor_pb2, extractor_pb2_grpc
 
 app = FastAPI(title="DocuMind document processor")
+draining = Event()
 
 GRPC_ADDRESS = "[::]:50051"
 GRPC_MAX_WORKERS = 4
@@ -22,6 +24,19 @@ GRPC_MAX_MESSAGE_LENGTH = (20 * 1024 * 1024) + (1024 * 1024)
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready() -> JSONResponse:
+    if draining.is_set():
+        return JSONResponse({"status": "draining"}, status_code=503)
+    try:
+        for model in (OLLAMA_MODEL, OLLAMA_CHAT_MODEL):
+            response = httpx.post(f"{OLLAMA_URL.rstrip('/')}/api/show", json={"name": model}, timeout=5)
+            response.raise_for_status()
+        return JSONResponse({"status": "ready", "dependencies": {"ollama": "ok", "embedding": "ok", "chat": "ok"}})
+    except Exception:
+        return JSONResponse({"status": "not_ready", "dependencies": {"ollama": "unavailable"}}, status_code=503)
 
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
@@ -104,6 +119,8 @@ def chat(question: str, contexts: list[Any], on_response: Callable[[httpx.Respon
 
 class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
     def EmbedQuestion(self, request: Any, context: grpc.ServicerContext) -> Any:
+        if draining.is_set():
+            context.abort(grpc.StatusCode.UNAVAILABLE, "processor is draining")
         try:
             vector = embed([request.text])[0]
             return extractor_pb2.EmbedQuestionResponse(embedding=vector, dimensions=len(vector))
@@ -111,6 +128,8 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
             context.abort(grpc.StatusCode.UNAVAILABLE, f"could not embed question: {error}")
 
     def AnswerQuestion(self, request: Any, context: grpc.ServicerContext) -> Iterator[Any]:
+        if draining.is_set():
+            context.abort(grpc.StatusCode.UNAVAILABLE, "processor is draining")
         response: httpx.Response | None = None
         cancelled = Event()
 
@@ -137,6 +156,8 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
             context.abort(grpc.StatusCode.UNAVAILABLE, f"could not answer question: {error}")
 
     def Process(self, request: Any, context: grpc.ServicerContext) -> Iterator[Any]:
+        if draining.is_set():
+            context.abort(grpc.StatusCode.UNAVAILABLE, "processor is draining")
         try:
             reader = PdfReader(BytesIO(request.pdf))
             page_texts = [page.extract_text() or "" for page in reader.pages]
@@ -167,6 +188,8 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
             )
         )
         for batch_index in range(0, len(document_chunks), EMBEDDING_BATCH_SIZE):
+            if not context.is_active() or draining.is_set():
+                return
             batch = document_chunks[batch_index : batch_index + EMBEDDING_BATCH_SIZE]
             try:
                 vectors = embed([value for value, _, _, _, _ in batch])
@@ -209,6 +232,7 @@ def serve_grpc() -> None:
     try:
         server.wait_for_termination()
     finally:
+        draining.set()
         server.stop(grace=5)
 
 

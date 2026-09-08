@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { apiFetch } from "@/lib/api";
 
 export type AnswerSource = {
   chunkIndex: number;
@@ -42,7 +43,7 @@ export function useAnswerStream(documentId: string | null) {
     setIsAsking(true);
 
     try {
-      const response = await fetch(`/documents/${documentId}/questions`, {
+      const response = await apiFetch(`/documents/${documentId}/questions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
         body: JSON.stringify({ question: question.trim() }),

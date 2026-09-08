@@ -20,10 +20,13 @@ import (
 
 const maxUploadSize = 20 << 20
 const defaultAnswerGenerationTimeout = 5 * time.Minute
+const maxQuestionBodySize = 32 << 10
 
 type documentHandler struct {
 	uploadDirectory string
 	store           documentStore
+	admission       *admissionController
+	metrics         *metrics
 }
 
 type documentSource struct {
@@ -46,11 +49,15 @@ type documentSummary struct {
 }
 
 func newDocumentHandler(uploadDirectory string, store documentStore) *documentHandler {
-	return &documentHandler{uploadDirectory: uploadDirectory, store: store}
+	return &documentHandler{uploadDirectory: uploadDirectory, store: store, admission: newAdmissionController(), metrics: newMetrics()}
 }
 
 func (h *documentHandler) Upload(c *echo.Context) error {
 	request := c.Request()
+	owner := principal(c)
+	if request.ContentLength > maxUploadSize {
+		return c.JSON(http.StatusRequestEntityTooLarge, map[string]string{"error": "uploaded file is too large"})
+	}
 	request.Body = http.MaxBytesReader(c.Response(), request.Body, maxUploadSize)
 
 	file, fileHeader, err := request.FormFile("file")
@@ -66,6 +73,15 @@ func (h *documentHandler) Upload(c *echo.Context) error {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not process uploaded file"})
 	}
+	if fileHeader.Size > maxUploadSize || !h.admission.reserveUpload(owner, fileHeader.Size) {
+		return quotaResponse(c, "upload quota exceeded")
+	}
+	reserved := true
+	defer func() {
+		if reserved {
+			h.admission.releaseUpload(owner, fileHeader.Size)
+		}
+	}()
 
 	documentID, err := documentID()
 	if err != nil {
@@ -101,16 +117,17 @@ func (h *documentHandler) Upload(c *echo.Context) error {
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
-	if err := h.store.Create(context.Background(), document); err != nil {
+	if err := h.store.CreateOwned(request.Context(), principal(c), document); err != nil {
 		_ = os.RemoveAll(filepath.Dir(destinationPath))
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not save document metadata"})
 	}
+	reserved = false
 
 	return c.JSON(http.StatusAccepted, map[string]string{"documentId": documentID, "status": document.Status})
 }
 
 func (h *documentHandler) List(c *echo.Context) error {
-	documents, err := h.store.List(context.Background())
+	documents, err := h.store.ListOwned(c.Request().Context(), principal(c))
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not list documents"})
 	}
@@ -122,7 +139,7 @@ func (h *documentHandler) List(c *echo.Context) error {
 }
 
 func (h *documentHandler) Get(c *echo.Context) error {
-	document, err := h.store.Find(context.Background(), c.Param("id"))
+	document, err := h.store.FindOwned(c.Request().Context(), principal(c), c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
 	}
@@ -140,10 +157,10 @@ func (h *documentHandler) Get(c *echo.Context) error {
 }
 
 func (h *documentHandler) Chunks(c *echo.Context) error {
-	if _, err := h.store.Find(context.Background(), c.Param("id")); err != nil {
+	if _, err := h.store.FindOwned(c.Request().Context(), principal(c), c.Param("id")); err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
 	}
-	chunks, err := h.store.ListChunks(context.Background(), c.Param("id"))
+	chunks, err := h.store.ListChunksOwned(c.Request().Context(), principal(c), c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not load document chunks"})
 	}
@@ -156,13 +173,14 @@ func (h *documentHandler) Chunks(c *echo.Context) error {
 
 func (h *documentHandler) Delete(c *echo.Context) error {
 	id := c.Param("id")
-	document, err := h.store.Find(context.Background(), id)
+	document, err := h.store.FindOwned(c.Request().Context(), principal(c), id)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
 	}
-	if err := h.store.Delete(context.Background(), id); err != nil {
+	if err := h.store.DeleteOwned(c.Request().Context(), principal(c), id); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not delete document"})
 	}
+	h.admission.releaseUpload(principal(c), document.Size)
 	if err := os.RemoveAll(filepath.Join(h.uploadDirectory, filepath.Dir(document.StoredPath))); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "document metadata deleted but file cleanup failed"})
 	}
@@ -170,6 +188,12 @@ func (h *documentHandler) Delete(c *echo.Context) error {
 }
 
 func (h *documentHandler) Ask(c *echo.Context) error {
+	owner := principal(c)
+	if !h.admission.beginAnswer(owner) {
+		return quotaResponse(c, "answer generation quota exceeded")
+	}
+	defer h.admission.endAnswer(owner)
+	c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, maxQuestionBodySize)
 	generationContext, cancel := context.WithTimeout(c.Request().Context(), answerGenerationTimeout())
 	defer cancel()
 
@@ -179,7 +203,7 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 	if err := json.NewDecoder(c.Request().Body).Decode(&request); err != nil || len([]rune(request.Question)) == 0 || len([]rune(request.Question)) > 4000 {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "question must contain between 1 and 4000 characters"})
 	}
-	document, err := h.store.Find(context.Background(), c.Param("id"))
+	document, err := h.store.FindOwned(generationContext, principal(c), c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
 	}
@@ -204,7 +228,7 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 		vector += fmt.Sprintf("%g", value)
 	}
 	vector += "]"
-	contexts, err := h.store.SearchChunks(generationContext, document.ID, vector, retrievalLimit())
+	contexts, err := h.store.SearchChunksOwned(generationContext, principal(c), document.ID, vector, retrievalLimit())
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not search document"})
 	}

@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:e2e": "playwright test tests/document-workflows.mocked.spec.ts",
+    "test:e2e": "playwright test tests/document-workflows.mocked.spec.ts tests/auth-workflows.mocked.spec.ts",
     "test:e2e:production": "playwright test tests/document-workflows.production.spec.ts",
     "test:e2e:install": "playwright install chromium"
   },

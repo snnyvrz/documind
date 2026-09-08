@@ -22,11 +22,18 @@ type memoryDocumentStore struct {
 	mutex     sync.Mutex
 }
 
+func (s *memoryDocumentStore) Ping(context.Context) error { return nil }
+
 func (s *memoryDocumentStore) Create(_ context.Context, document document) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	s.documents = append(s.documents, document)
 	return nil
+}
+
+func (s *memoryDocumentStore) CreateOwned(ctx context.Context, ownerID string, document document) error {
+	document.OwnerID = ownerID
+	return s.Create(ctx, document)
 }
 
 func (s *memoryDocumentStore) List(_ context.Context) ([]document, error) {
@@ -35,11 +42,35 @@ func (s *memoryDocumentStore) List(_ context.Context) ([]document, error) {
 	return append([]document(nil), s.documents...), nil
 }
 
+func (s *memoryDocumentStore) ListOwned(_ context.Context, ownerID string) ([]document, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	result := make([]document, 0)
+	for _, document := range s.documents {
+		if document.OwnerID == ownerID || document.OwnerID == "" {
+			result = append(result, document)
+		}
+	}
+	return result, nil
+}
+
 func (s *memoryDocumentStore) Delete(_ context.Context, id string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	for i := range s.documents {
 		if s.documents[i].ID == id {
+			s.documents = append(s.documents[:i], s.documents[i+1:]...)
+			return nil
+		}
+	}
+	return gorm.ErrRecordNotFound
+}
+
+func (s *memoryDocumentStore) DeleteOwned(ctx context.Context, ownerID, id string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for i := range s.documents {
+		if s.documents[i].ID == id && (s.documents[i].OwnerID == ownerID || s.documents[i].OwnerID == "") {
 			s.documents = append(s.documents[:i], s.documents[i+1:]...)
 			return nil
 		}
@@ -164,8 +195,27 @@ func (s *memoryDocumentStore) Find(_ context.Context, id string) (*document, err
 	return nil, gorm.ErrRecordNotFound
 }
 
+func (s *memoryDocumentStore) FindOwned(_ context.Context, ownerID, id string) (*document, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for index := range s.documents {
+		if s.documents[index].ID == id && (s.documents[index].OwnerID == ownerID || s.documents[index].OwnerID == "") {
+			result := s.documents[index]
+			return &result, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
 func (s *memoryDocumentStore) SearchChunks(_ context.Context, _ string, _ string, _ int) ([]documentChunk, error) {
 	return nil, nil
+}
+
+func (s *memoryDocumentStore) SearchChunksOwned(ctx context.Context, ownerID, documentID, embedding string, limit int) ([]documentChunk, error) {
+	if _, err := s.FindOwned(ctx, ownerID, documentID); err != nil {
+		return nil, err
+	}
+	return s.SearchChunks(ctx, documentID, embedding, limit)
 }
 
 func (s *memoryDocumentStore) ListChunks(_ context.Context, documentID string) ([]documentChunk, error) {
@@ -178,6 +228,13 @@ func (s *memoryDocumentStore) ListChunks(_ context.Context, documentID string) (
 		}
 	}
 	return result, nil
+}
+
+func (s *memoryDocumentStore) ListChunksOwned(ctx context.Context, ownerID, documentID string) ([]documentChunk, error) {
+	if _, err := s.FindOwned(ctx, ownerID, documentID); err != nil {
+		return nil, err
+	}
+	return s.ListChunks(ctx, documentID)
 }
 
 func TestUploadPDF(t *testing.T) {

@@ -4,15 +4,20 @@ import path from "node:path";
 const fixture = path.join(import.meta.dirname, "fixtures/sample-document.pdf");
 
 test.describe("mocked API document workflows", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route("**/auth/session", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ subject: "test-user", email: "test@example.com" }) });
+    });
+  });
   test("selects and removes a PDF", async ({ page }) => {
     await page.goto("/");
 
     await page.locator('input[type="file"]').setInputFiles(fixture);
-    await expect(page.getByText("sample-document.pdf")).toBeVisible();
+    await expect(page.getByRole("paragraph").filter({ hasText: "sample-document.pdf" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Upload document" })).toBeEnabled();
 
     await page.getByRole("button", { name: "Remove selected document" }).click();
-    await expect(page.getByText("sample-document.pdf")).not.toBeVisible();
+    await expect(page.getByRole("paragraph").filter({ hasText: "sample-document.pdf" })).not.toBeVisible();
     await expect(page.getByRole("button", { name: "Upload document" })).toBeDisabled();
   });
 

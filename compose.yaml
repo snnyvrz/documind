@@ -17,13 +17,25 @@ services:
       DOCUMENT_JOB_POLL_INTERVAL: ${DOCUMENT_JOB_POLL_INTERVAL:-1s}
       ANSWER_GENERATION_TIMEOUT: ${ANSWER_GENERATION_TIMEOUT:-5m}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
+      AUTH_MODE: ${AUTH_MODE:-development}
+      LEGACY_DOCUMENT_OWNER: ${LEGACY_DOCUMENT_OWNER:-local-dev}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-local-development-secret-change-me-please}
+      AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-documind}
+      AUTH_JWT_TTL: ${AUTH_JWT_TTL:-8h}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
     volumes:
       - ./data:/data
     depends_on:
       db:
         condition: service_healthy
       document-processor:
-        condition: service_started
+        condition: service_healthy
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:1323/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
 
   document-processor:
     build:
@@ -44,6 +56,13 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "uv", "run", "--no-sync", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 10s
+      timeout: 10s
+      start_period: 30s
+      retries: 30
 
   ollama:
     image: ollama/ollama:latest
@@ -88,7 +107,8 @@ services:
     ports:
       - "8080:80"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   postgres_data:

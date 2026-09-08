@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api";
 
 export type DocumentStatus = "queued" | "processing" | "completed" | "failed";
 
@@ -30,7 +31,7 @@ export function useDocumentProcessing(documentId: string | null) {
 
     const poll = async () => {
       try {
-        const response = await fetch(`/documents/${documentId}`, { signal: controller.signal });
+        const response = await apiFetch(`/documents/${documentId}`, { signal: controller.signal });
         const body = (await response.json().catch(() => null)) as DocumentDetails | { error?: string } | null;
         if (!response.ok) throw new Error(body && "error" in body ? body.error : "Could not load document.");
         if (!active) return;

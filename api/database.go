@@ -10,6 +10,7 @@ import (
 )
 
 type documentStore interface {
+	Ping(context.Context) error
 	Create(context.Context, document) error
 	List(context.Context) ([]document, error)
 	Delete(context.Context, string) error
@@ -21,6 +22,12 @@ type documentStore interface {
 	Find(context.Context, string) (*document, error)
 	ListChunks(context.Context, string) ([]documentChunk, error)
 	SearchChunks(context.Context, string, string, int) ([]documentChunk, error)
+	CreateOwned(context.Context, string, document) error
+	ListOwned(context.Context, string) ([]document, error)
+	DeleteOwned(context.Context, string, string) error
+	FindOwned(context.Context, string, string) (*document, error)
+	ListChunksOwned(context.Context, string, string) ([]documentChunk, error)
+	SearchChunksOwned(context.Context, string, string, string, int) ([]documentChunk, error)
 }
 
 var errLeaseLost = errors.New("document processing lease lost")
@@ -40,6 +47,7 @@ type documentChunk struct {
 
 type document struct {
 	ID                string `gorm:"type:uuid;primaryKey"`
+	OwnerID           string `gorm:"not null;index"`
 	OriginalFilename  string
 	StoredPath        string
 	MIMEType          string
@@ -61,6 +69,14 @@ type document struct {
 type postgresDocumentStore struct {
 	database *gorm.DB
 	close    func() error
+}
+
+func (s *postgresDocumentStore) Ping(ctx context.Context) error {
+	database, err := s.database.DB()
+	if err != nil {
+		return err
+	}
+	return database.PingContext(ctx)
 }
 
 func openDocumentStore(databaseURL string) (*postgresDocumentStore, error) {
@@ -95,7 +111,30 @@ func (s *postgresDocumentStore) initialize() error {
 	if err := s.database.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
 		return err
 	}
-	if err := s.database.AutoMigrate(&document{}, &documentChunk{}); err != nil {
+	if s.database.Migrator().HasTable(&document{}) {
+		if !s.database.Migrator().HasColumn(&document{}, "OwnerID") {
+			if err := s.database.Exec("ALTER TABLE documents ADD COLUMN owner_id text").Error; err != nil {
+				return err
+			}
+		}
+		var missing int64
+		if err := s.database.Model(&document{}).Where("owner_id IS NULL OR owner_id = ''").Count(&missing).Error; err != nil {
+			return err
+		}
+		if missing > 0 {
+			owner := getenv("LEGACY_DOCUMENT_OWNER", "")
+			if owner == "" {
+				return errors.New("legacy documents require LEGACY_DOCUMENT_OWNER before authentication can start")
+			}
+			if err := s.database.Model(&document{}).Where("owner_id IS NULL OR owner_id = ''").Update("owner_id", owner).Error; err != nil {
+				return err
+			}
+		}
+		if err := s.database.Exec("ALTER TABLE documents ALTER COLUMN owner_id SET NOT NULL").Error; err != nil {
+			return err
+		}
+	}
+	if err := s.database.AutoMigrate(&document{}, &documentChunk{}, &authUser{}); err != nil {
 		return err
 	}
 	if err := s.database.Exec(`CREATE INDEX IF NOT EXISTS idx_documents_queued_jobs
@@ -110,9 +149,20 @@ func (s *postgresDocumentStore) Create(ctx context.Context, document document) e
 	return s.database.WithContext(ctx).Create(&document).Error
 }
 
+func (s *postgresDocumentStore) CreateOwned(ctx context.Context, ownerID string, document document) error {
+	document.OwnerID = ownerID
+	return s.Create(ctx, document)
+}
+
 func (s *postgresDocumentStore) List(ctx context.Context) ([]document, error) {
 	var result []document
 	err := s.database.WithContext(ctx).Order("created_at DESC").Find(&result).Error
+	return result, err
+}
+
+func (s *postgresDocumentStore) ListOwned(ctx context.Context, ownerID string) ([]document, error) {
+	var result []document
+	err := s.database.WithContext(ctx).Where("owner_id = ?", ownerID).Order("created_at DESC").Find(&result).Error
 	return result, err
 }
 
@@ -129,6 +179,19 @@ func (s *postgresDocumentStore) Delete(ctx context.Context, id string) error {
 			return gorm.ErrRecordNotFound
 		}
 		return nil
+	})
+}
+
+func (s *postgresDocumentStore) DeleteOwned(ctx context.Context, ownerID, id string) error {
+	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var document document
+		if err := tx.Where("id = ? AND owner_id = ?", id, ownerID).First(&document).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("document_id = ?", id).Delete(&documentChunk{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&document).Error
 	})
 }
 
@@ -248,9 +311,23 @@ func (s *postgresDocumentStore) Find(ctx context.Context, id string) (*document,
 	return &result, nil
 }
 
+func (s *postgresDocumentStore) FindOwned(ctx context.Context, ownerID, id string) (*document, error) {
+	var result document
+	if err := s.database.WithContext(ctx).First(&result, "id = ? AND owner_id = ?", id, ownerID).Error; err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (s *postgresDocumentStore) ListChunks(ctx context.Context, documentID string) ([]documentChunk, error) {
 	var chunks []documentChunk
 	err := s.database.WithContext(ctx).Where("document_id = ?", documentID).Order("chunk_index ASC").Find(&chunks).Error
+	return chunks, err
+}
+
+func (s *postgresDocumentStore) ListChunksOwned(ctx context.Context, ownerID, documentID string) ([]documentChunk, error) {
+	var chunks []documentChunk
+	err := s.database.WithContext(ctx).Joins("JOIN documents ON documents.id = document_chunks.document_id").Where("document_chunks.document_id = ? AND documents.owner_id = ?", documentID, ownerID).Order("chunk_index ASC").Find(&chunks).Error
 	return chunks, err
 }
 
@@ -258,5 +335,13 @@ func (s *postgresDocumentStore) SearchChunks(ctx context.Context, documentID, em
 	var chunks []documentChunk
 	err := s.database.WithContext(ctx).Raw(`SELECT id, document_id, chunk_index, text, start_offset, end_offset, page_start, page_end, created_at
 FROM document_chunks WHERE document_id = ? ORDER BY embedding <=> ?::vector LIMIT ?`, documentID, embedding, limit).Scan(&chunks).Error
+	return chunks, err
+}
+
+func (s *postgresDocumentStore) SearchChunksOwned(ctx context.Context, ownerID, documentID, embedding string, limit int) ([]documentChunk, error) {
+	var chunks []documentChunk
+	err := s.database.WithContext(ctx).Raw(`SELECT c.id, c.document_id, c.chunk_index, c.text, c.start_offset, c.end_offset, c.page_start, c.page_end, c.created_at
+FROM document_chunks c JOIN documents d ON d.id = c.document_id
+WHERE c.document_id = ? AND d.owner_id = ? ORDER BY c.embedding <=> ?::vector LIMIT ?`, documentID, ownerID, embedding, limit).Scan(&chunks).Error
 	return chunks, err
 }
