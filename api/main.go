@@ -19,8 +19,8 @@ import (
 
 func main() {
 	_ = godotenv.Load()
-	if authMode() != "development" && len(os.Getenv("AUTH_JWT_SECRET")) < 32 {
-		panic("AUTH_JWT_SECRET must be at least 32 characters")
+	if err := validateProductionAuthConfig(); err != nil {
+		panic(err)
 	}
 
 	uploadDirectory, err := uploadDirectory()
@@ -48,6 +48,26 @@ func main() {
 		e.Logger.Error("failed to start server", "error", err)
 	}
 	<-workerDone
+}
+
+func validateProductionAuthConfig() error {
+	if authMode() == "development" {
+		return nil
+	}
+	secret := os.Getenv("AUTH_JWT_SECRET")
+	if secret == "" {
+		return errors.New("AUTH_JWT_SECRET is required")
+	}
+	if secret == developmentJWTSecret {
+		return errors.New("AUTH_JWT_SECRET must not use the development secret")
+	}
+	if len(secret) < 32 {
+		return errors.New("AUTH_JWT_SECRET must be at least 32 characters")
+	}
+	if os.Getenv("AUTH_COOKIE_SECURE") != "true" || os.Getenv("AUTH_REQUIRE_HTTPS") != "true" {
+		return errors.New("production requires AUTH_COOKIE_SECURE=true and AUTH_REQUIRE_HTTPS=true")
+	}
+	return nil
 }
 
 func authMode() string {

@@ -375,10 +375,19 @@ requires Ollama plus both configured embedding and chat models. Existing documen
 must be explicitly assigned an owner before enabling authentication.
 
 Browser authentication uses local email/password accounts. `POST /auth/register`
-and `POST /auth/login` issue an HTTP-only JWT cookie, `/auth/session` exposes the
-current user, and `POST /auth/logout` clears the cookie. JWTs are never exposed
-to frontend JavaScript or stored in browser storage. Configure `AUTH_JWT_SECRET`
-with at least 32 random characters for shared deployments.
+and `POST /auth/login` issue an HTTP-only, Secure JWT cookie, `/auth/session`
+exposes the current user, and `POST /auth/logout` clears the cookie and revokes
+all sessions for that account. JWTs are never exposed to frontend JavaScript or
+stored in browser storage. Configure `AUTH_JWT_SECRET` with at least 32 random
+characters for shared deployments. Production also requires
+`AUTH_COOKIE_SECURE=true` and `AUTH_REQUIRE_HTTPS=true`; TLS must terminate at
+the external reverse proxy, which must forward `X-Forwarded-Proto: https`.
+The bundled nginx proxy preserves that header when forwarding to the API.
+
+Authentication requests are limited by source IP and normalized account, use an
+8 KiB request-body limit, and reject passwords shorter than 8 characters or
+longer than 72 bytes. These rate limits are process-local and must be replaced
+with shared rate-limit storage when running multiple API replicas.
 
 For local Compose development, `AUTH_MODE=development` uses the fixed local
 principal only for in-memory unit tests. The Compose API uses the configured JWT
@@ -404,7 +413,7 @@ The main API environment variables are:
 
 | Variable | Description | Compose default |
 | --- | --- | --- |
-| `DATABASE_URL` | PostgreSQL connection string | `postgres://documind:documind@db:5432/documind?sslmode=disable` |
+| `DATABASE_URL` | PostgreSQL connection string, using the required production database variables | `postgres://${POSTGRES_USER}@db:5432/${POSTGRES_DB}?sslmode=disable` |
 | `UPLOAD_DIRECTORY` | Directory where uploaded PDFs are stored | `/data` |
 | `DOCUMENT_PROCESSOR_GRPC_URL` | gRPC address of the document processor | `document-processor:50051` |
 | `DOCUMENT_JOB_MAX_ATTEMPTS` | Maximum processing attempts before permanent failure | `5` |
@@ -427,6 +436,15 @@ The main API environment variables are:
 
 The API and nginx both enforce the 20 MiB upload limit. Keep these values in
 sync if the limit changes.
+
+Compose does not publish PostgreSQL to the host. Set `POSTGRES_DB`,
+`POSTGRES_USER`, and `POSTGRES_PASSWORD` to deployment-specific values, and set
+`AUTH_JWT_SECRET` to a randomly generated secret. The Compose API defaults to
+production mode and refuses to start when these values are missing or insecure.
+The API is private to the Compose network; publish only the frontend or an
+external TLS reverse proxy.
+For local development, use `api/.env.example` with `AUTH_MODE=development` and
+an explicitly configured local database.
 
 The default embedding model is `nomic-embed-text`, which produces
 768-dimensional vectors. A different model must produce the configured

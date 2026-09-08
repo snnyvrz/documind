@@ -2,10 +2,10 @@ services:
   api:
     build:
       context: ./api
-    ports:
-      - "1323:1323"
+    expose:
+      - "1323"
     environment:
-      DATABASE_URL: postgres://documind:documind@db:5432/documind?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:?POSTGRES_DB is required}?sslmode=disable
       UPLOAD_DIRECTORY: /data
       DOCUMENT_PROCESSOR_GRPC_URL: document-processor:50051
       DOCUMENT_JOB_MAX_ATTEMPTS: ${DOCUMENT_JOB_MAX_ATTEMPTS:-5}
@@ -17,12 +17,13 @@ services:
       DOCUMENT_JOB_POLL_INTERVAL: ${DOCUMENT_JOB_POLL_INTERVAL:-1s}
       ANSWER_GENERATION_TIMEOUT: ${ANSWER_GENERATION_TIMEOUT:-5m}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
-      AUTH_MODE: ${AUTH_MODE:-development}
-      LEGACY_DOCUMENT_OWNER: ${LEGACY_DOCUMENT_OWNER:-local-dev}
-      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-local-development-secret-change-me-please}
+      AUTH_MODE: ${AUTH_MODE:-production}
+      LEGACY_DOCUMENT_OWNER: ${LEGACY_DOCUMENT_OWNER:?LEGACY_DOCUMENT_OWNER is required}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?AUTH_JWT_SECRET is required}
       AUTH_JWT_ISSUER: ${AUTH_JWT_ISSUER:-documind}
       AUTH_JWT_TTL: ${AUTH_JWT_TTL:-8h}
-      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}
+      AUTH_REQUIRE_HTTPS: ${AUTH_REQUIRE_HTTPS:-true}
     volumes:
       - ./data:/data
     depends_on:
@@ -87,14 +88,12 @@ services:
 
   db:
     image: pgvector/pgvector:pg18
-    ports:
-      - "5432:5432"
     environment:
-      POSTGRES_DB: documind
-      POSTGRES_USER: documind
-      POSTGRES_PASSWORD: documind
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U documind -d documind"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5
