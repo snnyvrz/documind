@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"gorm.io/driver/postgres"
@@ -25,9 +26,37 @@ type documentStore interface {
 	CreateOwned(context.Context, string, document) error
 	ListOwned(context.Context, string) ([]document, error)
 	DeleteOwned(context.Context, string, string) error
+	RetryOwned(context.Context, string, string) error
 	FindOwned(context.Context, string, string) (*document, error)
 	ListChunksOwned(context.Context, string, string) ([]documentChunk, error)
 	SearchChunksOwned(context.Context, string, string, string, int) ([]documentChunk, error)
+	CreateQuestion(context.Context, documentQuestion) error
+	ListQuestionsOwned(context.Context, string, string) ([]documentQuestion, error)
+}
+
+type documentCursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+type documentSummaryRow struct {
+	ID               string
+	OriginalFilename string
+	Status           string
+	PageCount        uint32
+	ErrorMessage     *string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type quotaStore interface {
+	ReserveUpload(context.Context, string, string, string, int64, time.Time) error
+	CommitUpload(context.Context, string) error
+	ReleaseUpload(context.Context, string) error
+	BeginAnswer(context.Context, string, string, time.Time) error
+	EndAnswer(context.Context, string, string) error
+	AllowRate(context.Context, string, string, int, time.Duration, time.Time) (bool, error)
+	DeleteOwnedWithUsage(context.Context, string, string) (*document, error)
 }
 
 var errLeaseLost = errors.New("document processing lease lost")
@@ -43,6 +72,16 @@ type documentChunk struct {
 	PageEnd     uint32
 	Embedding   string `gorm:"type:vector(768)"`
 	CreatedAt   time.Time
+}
+
+type documentQuestion struct {
+	ID         string    `gorm:"type:uuid;primaryKey" json:"id"`
+	OwnerID    string    `gorm:"not null;index" json:"-"`
+	DocumentID string    `gorm:"type:uuid;index" json:"documentId"`
+	Question   string    `gorm:"type:text" json:"question"`
+	Answer     string    `gorm:"type:text" json:"answer"`
+	Sources    string    `gorm:"type:jsonb" json:"sources"`
+	CreatedAt  time.Time `json:"createdAt"`
 }
 
 type document struct {
@@ -66,6 +105,45 @@ type document struct {
 	UpdatedAt         time.Time
 }
 
+type dbOwnerUsage struct {
+	OwnerID            string `gorm:"primaryKey"`
+	CommittedBytes     int64  `gorm:"not null;default:0"`
+	CommittedDocuments int    `gorm:"not null;default:0"`
+	ReservedBytes      int64  `gorm:"not null;default:0"`
+	ReservedDocuments  int    `gorm:"not null;default:0"`
+	ActiveAnswers      int    `gorm:"not null;default:0"`
+	UpdatedAt          time.Time
+}
+
+type uploadReservation struct {
+	ID          string    `gorm:"primaryKey"`
+	OwnerID     string    `gorm:"not null;index"`
+	DocumentID  string    `gorm:"not null;index"`
+	Bytes       int64     `gorm:"not null"`
+	State       string    `gorm:"not null;index"`
+	ExpiresAt   time.Time `gorm:"not null;index"`
+	CreatedAt   time.Time
+	CommittedAt *time.Time
+	ReleasedAt  *time.Time
+}
+
+type answerReservation struct {
+	ID         string    `gorm:"primaryKey"`
+	OwnerID    string    `gorm:"not null;index"`
+	RequestID  string    `gorm:"not null;uniqueIndex"`
+	State      string    `gorm:"not null;index"`
+	ExpiresAt  time.Time `gorm:"not null;index"`
+	CreatedAt  time.Time
+	FinishedAt *time.Time
+}
+
+type rateLimitBucket struct {
+	Kind        string    `gorm:"primaryKey"`
+	Key         string    `gorm:"primaryKey"`
+	WindowStart time.Time `gorm:"primaryKey"`
+	Count       int       `gorm:"not null;default:0"`
+}
+
 type postgresDocumentStore struct {
 	database *gorm.DB
 	close    func() error
@@ -84,11 +162,14 @@ func openDocumentStore(databaseURL string) (*postgresDocumentStore, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	connection, err := database.DB()
 	if err != nil {
 		return nil, err
 	}
+	connection.SetMaxOpenConns(environmentIntDefault("DB_MAX_OPEN_CONNS", 25))
+	connection.SetMaxIdleConns(environmentIntDefault("DB_MAX_IDLE_CONNS", 5))
+	connection.SetConnMaxLifetime(environmentDurationDefault("DB_CONN_MAX_LIFETIME", 30*time.Minute))
+	connection.SetConnMaxIdleTime(environmentDurationDefault("DB_CONN_MAX_IDLE_TIME", 5*time.Minute))
 	if err := connection.Ping(); err != nil {
 		connection.Close()
 		return nil, err
@@ -134,15 +215,47 @@ func (s *postgresDocumentStore) initialize() error {
 			return err
 		}
 	}
-	if err := s.database.AutoMigrate(&document{}, &documentChunk{}, &authUser{}); err != nil {
+	if err := s.database.AutoMigrate(&document{}, &documentChunk{}, &documentQuestion{}, &authUser{}, &dbOwnerUsage{}, &uploadReservation{}, &answerReservation{}, &rateLimitBucket{}); err != nil {
 		return err
 	}
 	if err := s.database.Exec(`CREATE INDEX IF NOT EXISTS idx_documents_queued_jobs
 ON documents (next_attempt_at, created_at, id) WHERE status = 'queued'`).Error; err != nil {
 		return err
 	}
+	if err := s.database.Exec(`CREATE INDEX IF NOT EXISTS idx_documents_owner_created_id ON documents (owner_id, created_at DESC, id DESC)`).Error; err != nil {
+		return err
+	}
+	if err := s.database.Exec(`INSERT INTO db_owner_usages (owner_id, committed_bytes, committed_documents, updated_at)
+SELECT owner_id, COALESCE(SUM(size), 0), COUNT(*), NOW() FROM documents GROUP BY owner_id
+ON CONFLICT (owner_id) DO NOTHING`).Error; err != nil {
+		return err
+	}
 	return s.database.Exec(`CREATE INDEX IF NOT EXISTS idx_documents_expired_leases
 ON documents (lease_expires_at, created_at, id) WHERE status = 'processing'`).Error
+}
+
+func environmentIntDefault(name string, fallback int) int {
+	value := getenv(name, "")
+	if value == "" {
+		return fallback
+	}
+	var parsed int
+	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func environmentDurationDefault(name string, fallback time.Duration) time.Duration {
+	value := getenv(name, "")
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func (s *postgresDocumentStore) Create(ctx context.Context, document document) error {
@@ -164,6 +277,144 @@ func (s *postgresDocumentStore) ListOwned(ctx context.Context, ownerID string) (
 	var result []document
 	err := s.database.WithContext(ctx).Where("owner_id = ?", ownerID).Order("created_at DESC").Find(&result).Error
 	return result, err
+}
+
+func (s *postgresDocumentStore) ListOwnedPage(ctx context.Context, ownerID string, limit int, cursor *documentCursor) ([]documentSummaryRow, error) {
+	query := s.database.WithContext(ctx).Model(&document{}).Select("id, original_filename, status, page_count, error_message, created_at, updated_at").Where("owner_id = ?", ownerID)
+	if cursor != nil {
+		query = query.Where("(created_at, id) < (?, ?)", cursor.CreatedAt, cursor.ID)
+	}
+	var result []documentSummaryRow
+	err := query.Order("created_at DESC, id DESC").Limit(limit).Scan(&result).Error
+	return result, err
+}
+
+func (s *postgresDocumentStore) ReserveUpload(ctx context.Context, ownerID, reservationID, documentID string, size int64, expiresAt time.Time) error {
+	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		usage := dbOwnerUsage{OwnerID: ownerID}
+		if err := tx.Where("owner_id = ?", ownerID).FirstOrCreate(&usage).Error; err != nil {
+			return err
+		}
+		if err := tx.Raw("SELECT * FROM db_owner_usages WHERE owner_id = ? FOR UPDATE", ownerID).Scan(&usage).Error; err != nil {
+			return err
+		}
+		if usage.CommittedBytes+usage.ReservedBytes+size > maxOwnerStorage || usage.CommittedDocuments+usage.ReservedDocuments+1 > maxOwnerDocuments {
+			return errQuotaExceeded
+		}
+		if err := tx.Model(&dbOwnerUsage{}).Where("owner_id = ?", ownerID).Updates(map[string]any{"reserved_bytes": gorm.Expr("reserved_bytes + ?", size), "reserved_documents": gorm.Expr("reserved_documents + 1"), "updated_at": time.Now().UTC()}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&uploadReservation{ID: reservationID, OwnerID: ownerID, DocumentID: documentID, Bytes: size, State: "reserved", ExpiresAt: expiresAt, CreatedAt: time.Now().UTC()}).Error
+	})
+}
+
+func (s *postgresDocumentStore) CommitUpload(ctx context.Context, reservationID string) error {
+	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var reservation uploadReservation
+		if err := tx.Where("id = ?", reservationID).First(&reservation).Error; err != nil {
+			return err
+		}
+		if reservation.State != "reserved" {
+			return nil
+		}
+		var usage dbOwnerUsage
+		if err := tx.Raw("SELECT * FROM db_owner_usages WHERE owner_id = ? FOR UPDATE", reservation.OwnerID).Scan(&usage).Error; err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		if err := tx.Model(&dbOwnerUsage{}).Where("owner_id = ?", reservation.OwnerID).Updates(map[string]any{"reserved_bytes": gorm.Expr("reserved_bytes - ?", reservation.Bytes), "reserved_documents": gorm.Expr("reserved_documents - 1"), "committed_bytes": gorm.Expr("committed_bytes + ?", reservation.Bytes), "committed_documents": gorm.Expr("committed_documents + 1"), "updated_at": now}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&reservation).Updates(map[string]any{"state": "committed", "committed_at": now}).Error
+	})
+}
+
+func (s *postgresDocumentStore) ReleaseUpload(ctx context.Context, reservationID string) error {
+	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var reservation uploadReservation
+		if err := tx.Where("id = ?", reservationID).First(&reservation).Error; err != nil {
+			return err
+		}
+		if reservation.State != "reserved" {
+			return nil
+		}
+		now := time.Now().UTC()
+		if err := tx.Model(&dbOwnerUsage{}).Where("owner_id = ?", reservation.OwnerID).Updates(map[string]any{"reserved_bytes": gorm.Expr("GREATEST(reserved_bytes - ?, 0)", reservation.Bytes), "reserved_documents": gorm.Expr("GREATEST(reserved_documents - 1, 0)"), "updated_at": now}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&reservation).Updates(map[string]any{"state": "released", "released_at": now}).Error
+	})
+}
+
+func (s *postgresDocumentStore) BeginAnswer(ctx context.Context, ownerID, requestID string, expiresAt time.Time) error {
+	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		usage := dbOwnerUsage{OwnerID: ownerID}
+		if err := tx.Where("owner_id = ?", ownerID).FirstOrCreate(&usage).Error; err != nil {
+			return err
+		}
+		if err := tx.Raw("SELECT * FROM db_owner_usages WHERE owner_id = ? FOR UPDATE", ownerID).Scan(&usage).Error; err != nil {
+			return err
+		}
+		if usage.ActiveAnswers >= maxActiveAnswers {
+			return errQuotaExceeded
+		}
+		if err := tx.Model(&dbOwnerUsage{}).Where("owner_id = ?", ownerID).UpdateColumns(map[string]any{"active_answers": gorm.Expr("active_answers + 1"), "updated_at": time.Now().UTC()}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&answerReservation{ID: requestID, OwnerID: ownerID, RequestID: requestID, State: "active", ExpiresAt: expiresAt, CreatedAt: time.Now().UTC()}).Error
+	})
+}
+
+func (s *postgresDocumentStore) EndAnswer(ctx context.Context, reservationID, state string) error {
+	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var reservation answerReservation
+		if err := tx.Where("id = ?", reservationID).First(&reservation).Error; err != nil {
+			return err
+		}
+		if reservation.State != "active" {
+			return nil
+		}
+		now := time.Now().UTC()
+		if err := tx.Model(&dbOwnerUsage{}).Where("owner_id = ?", reservation.OwnerID).UpdateColumns(map[string]any{"active_answers": gorm.Expr("GREATEST(active_answers - 1, 0)"), "updated_at": now}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&reservation).Updates(map[string]any{"state": state, "finished_at": now}).Error
+	})
+}
+
+func (s *postgresDocumentStore) AllowRate(ctx context.Context, kind, key string, limit int, window time.Duration, now time.Time) (bool, error) {
+	windowStart := now.UTC().Truncate(window)
+	result := s.database.WithContext(ctx).Exec(`INSERT INTO rate_limit_buckets (kind, key, window_start, count) VALUES (?, ?, ?, 1)
+ON CONFLICT (kind, key, window_start) DO UPDATE SET count = rate_limit_buckets.count + 1
+WHERE rate_limit_buckets.count < ?`, kind, key, windowStart, limit)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected == 1, nil
+}
+
+func (s *postgresDocumentStore) DeleteOwnedWithUsage(ctx context.Context, ownerID, id string) (*document, error) {
+	var deleted document
+	err := s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("id = ? AND owner_id = ?", id, ownerID).First(&deleted).Error; err != nil {
+			return err
+		}
+		var usage dbOwnerUsage
+		if err := tx.Raw("SELECT * FROM db_owner_usages WHERE owner_id = ? FOR UPDATE", ownerID).Scan(&usage).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("document_id = ?", id).Delete(&documentChunk{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("document_id = ? AND owner_id = ?", id, ownerID).Delete(&documentQuestion{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&deleted).Error; err != nil {
+			return err
+		}
+		return tx.Model(&dbOwnerUsage{}).Where("owner_id = ?", ownerID).Updates(map[string]any{"committed_bytes": gorm.Expr("GREATEST(committed_bytes - ?, 0)", deleted.Size), "committed_documents": gorm.Expr("GREATEST(committed_documents - 1, 0)"), "updated_at": time.Now().UTC()}).Error
+	})
+	return &deleted, err
 }
 
 func (s *postgresDocumentStore) Delete(ctx context.Context, id string) error {
@@ -191,8 +442,24 @@ func (s *postgresDocumentStore) DeleteOwned(ctx context.Context, ownerID, id str
 		if err := tx.Where("document_id = ?", id).Delete(&documentChunk{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("document_id = ? AND owner_id = ?", id, ownerID).Delete(&documentQuestion{}).Error; err != nil {
+			return err
+		}
 		return tx.Delete(&document).Error
 	})
+}
+
+func (s *postgresDocumentStore) RetryOwned(ctx context.Context, ownerID, id string) error {
+	result := s.database.WithContext(ctx).Model(&document{}).
+		Where("id = ? AND owner_id = ? AND status = 'failed'", id, ownerID).
+		Updates(map[string]any{"status": "queued", "error_message": nil, "next_attempt_at": nil, "lease_token": nil, "lease_expires_at": nil, "attempt_count": 0, "updated_at": time.Now().UTC()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (s *postgresDocumentStore) ClaimNext(ctx context.Context, leaseToken string, leaseDuration time.Duration, maxAttempts int) (*document, error) {
@@ -344,4 +611,14 @@ func (s *postgresDocumentStore) SearchChunksOwned(ctx context.Context, ownerID, 
 FROM document_chunks c JOIN documents d ON d.id = c.document_id
 WHERE c.document_id = ? AND d.owner_id = ? ORDER BY c.embedding <=> ?::vector LIMIT ?`, documentID, ownerID, embedding, limit).Scan(&chunks).Error
 	return chunks, err
+}
+
+func (s *postgresDocumentStore) CreateQuestion(ctx context.Context, question documentQuestion) error {
+	return s.database.WithContext(ctx).Create(&question).Error
+}
+
+func (s *postgresDocumentStore) ListQuestionsOwned(ctx context.Context, ownerID, documentID string) ([]documentQuestion, error) {
+	var result []documentQuestion
+	err := s.database.WithContext(ctx).Where("owner_id = ? AND document_id = ?", ownerID, documentID).Order("created_at DESC").Find(&result).Error
+	return result, err
 }

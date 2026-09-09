@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	extractorpb "api/proto"
@@ -25,8 +27,15 @@ const maxQuestionBodySize = 32 << 10
 type documentHandler struct {
 	uploadDirectory string
 	store           documentStore
+	storage         documentStorage
 	admission       *admissionController
 	metrics         *metrics
+}
+
+type documentListResponse struct {
+	Items      []documentSummary `json:"items"`
+	NextCursor string            `json:"nextCursor,omitempty"`
+	HasMore    bool              `json:"hasMore"`
 }
 
 type documentSource struct {
@@ -48,8 +57,12 @@ type documentSummary struct {
 	Error      *string   `json:"error,omitempty"`
 }
 
-func newDocumentHandler(uploadDirectory string, store documentStore) *documentHandler {
-	return &documentHandler{uploadDirectory: uploadDirectory, store: store, admission: newAdmissionController(), metrics: newMetrics()}
+func newDocumentHandler(uploadDirectory string, store documentStore, storages ...documentStorage) *documentHandler {
+	storage := documentStorage(newFilesystemStorage(uploadDirectory))
+	if len(storages) > 0 {
+		storage = storages[0]
+	}
+	return &documentHandler{uploadDirectory: uploadDirectory, store: store, storage: storage, admission: newAdmissionController(), metrics: newMetrics()}
 }
 
 func (h *documentHandler) Upload(c *echo.Context) error {
@@ -73,36 +86,39 @@ func (h *documentHandler) Upload(c *echo.Context) error {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not process uploaded file"})
 	}
-	if fileHeader.Size > maxUploadSize || !h.admission.reserveUpload(owner, fileHeader.Size) {
+	if fileHeader.Size > maxUploadSize {
+		return quotaResponse(c, "upload quota exceeded")
+	}
+	documentID, err := documentID()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not create document ID"})
+	}
+	reservationID := documentID
+	durableQuota, hasDurableQuota := h.store.(quotaStore)
+	if hasDurableQuota {
+		allowed, rateErr := durableQuota.AllowRate(request.Context(), "upload-owner", owner, maxUploadsPerHour, time.Hour, time.Now().UTC())
+		if rateErr != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not check upload quota"})
+		}
+		if !allowed || durableQuota.ReserveUpload(request.Context(), owner, reservationID, documentID, fileHeader.Size, time.Now().UTC().Add(30*time.Minute)) != nil {
+			return quotaResponse(c, "upload quota exceeded")
+		}
+	} else if !h.admission.reserveUpload(owner, fileHeader.Size) {
 		return quotaResponse(c, "upload quota exceeded")
 	}
 	reserved := true
 	defer func() {
 		if reserved {
-			h.admission.releaseUpload(owner, fileHeader.Size)
+			if hasDurableQuota {
+				_ = durableQuota.ReleaseUpload(context.Background(), reservationID)
+			} else {
+				h.admission.releaseUpload(owner, fileHeader.Size)
+			}
 		}
 	}()
 
-	documentID, err := documentID()
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not create document ID"})
-	}
-
-	storedPath := filepath.Join("documents", documentID, "original.pdf")
-	destinationPath := filepath.Join(h.uploadDirectory, storedPath)
-	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not prepare upload storage"})
-	}
-
-	destination, err := os.OpenFile(destinationPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not save uploaded file"})
-	}
-
-	_, copyErr := io.Copy(destination, file)
-	closeErr := destination.Close()
-	if copyErr != nil || closeErr != nil {
-		_ = os.RemoveAll(filepath.Dir(destinationPath))
+	storedPath := filepath.ToSlash(filepath.Join("documents", documentID, "original.pdf"))
+	if err := h.storage.Put(request.Context(), storedPath, file, fileHeader.Size, "application/pdf"); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not save uploaded file"})
 	}
 
@@ -118,8 +134,13 @@ func (h *documentHandler) Upload(c *echo.Context) error {
 		UpdatedAt:        now,
 	}
 	if err := h.store.CreateOwned(request.Context(), principal(c), document); err != nil {
-		_ = os.RemoveAll(filepath.Dir(destinationPath))
+		_ = h.storage.Delete(context.Background(), storedPath)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not save document metadata"})
+	}
+	if hasDurableQuota {
+		if err := durableQuota.CommitUpload(request.Context(), reservationID); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not commit upload quota"})
+		}
 	}
 	reserved = false
 
@@ -127,6 +148,53 @@ func (h *documentHandler) Upload(c *echo.Context) error {
 }
 
 func (h *documentHandler) List(c *echo.Context) error {
+	limit := 50
+	if value, err := strconv.Atoi(c.QueryParam("limit")); err == nil && value > 0 {
+		if value > 100 {
+			value = 100
+		}
+		limit = value
+	}
+	var cursor *documentCursor
+	if value := c.QueryParam("cursor"); value != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(value)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid cursor"})
+		}
+		var payload struct {
+			CreatedAt time.Time `json:"createdAt"`
+			ID        string    `json:"id"`
+		}
+		if json.Unmarshal(decoded, &payload) != nil || payload.ID == "" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid cursor"})
+		}
+		cursor = &documentCursor{CreatedAt: payload.CreatedAt, ID: payload.ID}
+	}
+	if paged, ok := h.store.(interface {
+		ListOwnedPage(context.Context, string, int, *documentCursor) ([]documentSummaryRow, error)
+	}); ok {
+		rows, err := paged.ListOwnedPage(c.Request().Context(), principal(c), limit+1, cursor)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not list documents"})
+		}
+		result := documentListResponse{Items: make([]documentSummary, 0, len(rows))}
+		if len(rows) > limit {
+			result.HasMore = true
+			rows = rows[:limit]
+		}
+		for _, row := range rows {
+			result.Items = append(result.Items, documentSummary{DocumentID: row.ID, Filename: row.OriginalFilename, Status: row.Status, PageCount: row.PageCount, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, Error: row.ErrorMessage})
+		}
+		if result.HasMore && len(rows) > 0 {
+			last := rows[len(rows)-1]
+			encoded, _ := json.Marshal(struct {
+				CreatedAt time.Time `json:"createdAt"`
+				ID        string    `json:"id"`
+			}{last.CreatedAt, last.ID})
+			result.NextCursor = base64.RawURLEncoding.EncodeToString(encoded)
+		}
+		return c.JSON(http.StatusOK, result)
+	}
 	documents, err := h.store.ListOwned(c.Request().Context(), principal(c))
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not list documents"})
@@ -135,7 +203,10 @@ func (h *documentHandler) List(c *echo.Context) error {
 	for i, document := range documents {
 		result[i] = documentSummary{DocumentID: document.ID, Filename: document.OriginalFilename, Status: document.Status, PageCount: document.PageCount, CreatedAt: document.CreatedAt, UpdatedAt: document.UpdatedAt, Error: document.ErrorMessage}
 	}
-	return c.JSON(http.StatusOK, result)
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return c.JSON(http.StatusOK, documentListResponse{Items: result, HasMore: false})
 }
 
 func (h *documentHandler) Get(c *echo.Context) error {
@@ -176,8 +247,7 @@ func (h *documentHandler) File(c *echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
 	}
-	path := filepath.Join(h.uploadDirectory, document.StoredPath)
-	file, err := os.Open(path)
+	file, err := h.storage.Get(c.Request().Context(), document.StoredPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "document file not found"})
@@ -188,7 +258,11 @@ func (h *documentHandler) File(c *echo.Context) error {
 
 	c.Response().Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", filepath.Base(document.OriginalFilename)))
 	c.Response().Header().Set("Content-Type", document.MIMEType)
-	http.ServeContent(c.Response(), c.Request(), document.OriginalFilename, document.UpdatedAt, file)
+	content, readErr := io.ReadAll(file)
+	if readErr != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not read document file"})
+	}
+	http.ServeContent(c.Response(), c.Request(), document.OriginalFilename, document.UpdatedAt, strings.NewReader(string(content)))
 	return nil
 }
 
@@ -198,22 +272,54 @@ func (h *documentHandler) Delete(c *echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
 	}
-	if err := h.store.DeleteOwned(c.Request().Context(), principal(c), id); err != nil {
+	if durable, ok := h.store.(quotaStore); ok {
+		deleted, err := durable.DeleteOwnedWithUsage(c.Request().Context(), principal(c), id)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not delete document"})
+		}
+		document = deleted
+	} else if err := h.store.DeleteOwned(c.Request().Context(), principal(c), id); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not delete document"})
+	} else {
+		h.admission.releaseUpload(principal(c), document.Size)
 	}
-	h.admission.releaseUpload(principal(c), document.Size)
-	if err := os.RemoveAll(filepath.Join(h.uploadDirectory, filepath.Dir(document.StoredPath))); err != nil {
+	if err := h.storage.Delete(context.Background(), document.StoredPath); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "document metadata deleted but file cleanup failed"})
 	}
 	return c.NoContent(http.StatusNoContent)
 }
 
+func (h *documentHandler) Retry(c *echo.Context) error {
+	id := c.Param("id")
+	if err := h.store.RetryOwned(c.Request().Context(), principal(c), id); err != nil {
+		return c.JSON(http.StatusConflict, map[string]string{"error": "only failed documents can be retried"})
+	}
+	return c.JSON(http.StatusAccepted, map[string]string{"documentId": id, "status": "queued"})
+}
+
+func (h *documentHandler) Questions(c *echo.Context) error {
+	if _, err := h.store.FindOwned(c.Request().Context(), principal(c), c.Param("id")); err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
+	}
+	questions, err := h.store.ListQuestionsOwned(c.Request().Context(), principal(c), c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not load question history"})
+	}
+	result := make([]map[string]any, len(questions))
+	for i, question := range questions {
+		var sources []documentSource
+		if question.Sources != "" {
+			if err := json.Unmarshal([]byte(question.Sources), &sources); err != nil {
+				return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not decode question history"})
+			}
+		}
+		result[i] = map[string]any{"id": question.ID, "documentId": question.DocumentID, "question": question.Question, "answer": question.Answer, "sources": sources, "createdAt": question.CreatedAt}
+	}
+	return c.JSON(http.StatusOK, result)
+}
+
 func (h *documentHandler) Ask(c *echo.Context) error {
 	owner := principal(c)
-	if !h.admission.beginAnswer(owner) {
-		return quotaResponse(c, "answer generation quota exceeded")
-	}
-	defer h.admission.endAnswer(owner)
 	c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, maxQuestionBodySize)
 	generationContext, cancel := context.WithTimeout(c.Request().Context(), answerGenerationTimeout())
 	defer cancel()
@@ -230,6 +336,23 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 	}
 	if document.Status != "completed" {
 		return c.JSON(http.StatusConflict, map[string]string{"error": "document is not ready for questions"})
+	}
+	requestID, _ := documentID()
+	durableQuota, hasDurableQuota := h.store.(quotaStore)
+	if hasDurableQuota {
+		allowed, err := durableQuota.AllowRate(generationContext, "answer-owner", owner, maxAnswersPerDay, 24*time.Hour, time.Now().UTC())
+		if err != nil || !allowed {
+			return quotaResponse(c, "answer generation quota exceeded")
+		}
+		if err := durableQuota.BeginAnswer(generationContext, owner, requestID, time.Now().UTC().Add(answerGenerationTimeout())); err != nil {
+			return quotaResponse(c, "answer generation quota exceeded")
+		}
+		defer func() { _ = durableQuota.EndAnswer(context.Background(), requestID, "released") }()
+	} else {
+		if !h.admission.beginAnswer(owner) {
+			return quotaResponse(c, "answer generation quota exceeded")
+		}
+		defer h.admission.endAnswer(owner)
 	}
 	connection, err := grpc.NewClient(processorAddress(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -269,6 +392,7 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 	response.Header().Set("Connection", "keep-alive")
 	response.Header().Set("X-Accel-Buffering", "no")
 	flusher, canFlush := response.(http.Flusher)
+	var answerFromStream string
 	for {
 		event, receiveErr := stream.Recv()
 		if receiveErr == io.EOF {
@@ -295,6 +419,7 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 			return nil
 		}
 		payload, _ := json.Marshal(map[string]string{"text": event.Text})
+		answerFromStream += event.Text
 		writeSSE(response, flusher, canFlush, "token", payload)
 		if canFlush {
 			flusher.Flush()
@@ -306,6 +431,21 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 	}
 	payload, _ := json.Marshal(map[string]any{"sources": sources})
 	writeSSE(response, flusher, canFlush, "sources", payload)
+	sourcesJSON, _ := json.Marshal(sources)
+	historyID, err := documentID()
+	if err != nil {
+		writeSSEError(response, flusher, canFlush, "history_failed", "Answer completed but could not be saved.")
+		writeSSEDone(response, flusher, canFlush, false)
+		return nil
+	}
+	history := documentQuestion{ID: historyID, OwnerID: principal(c), DocumentID: document.ID, Question: request.Question, Answer: answerFromStream, Sources: string(sourcesJSON), CreatedAt: time.Now().UTC()}
+	if err := h.store.CreateQuestion(generationContext, history); err != nil {
+		writeSSEError(response, flusher, canFlush, "history_failed", "Answer completed but could not be saved.")
+		writeSSEDone(response, flusher, canFlush, false)
+		return nil
+	}
+	historyPayload, _ := json.Marshal(history)
+	writeSSE(response, flusher, canFlush, "history", historyPayload)
 	writeSSEDone(response, flusher, canFlush, true)
 	return nil
 }

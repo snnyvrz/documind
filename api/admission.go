@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"sync"
 	"time"
 )
+
+var errQuotaExceeded = errors.New("quota exceeded")
 
 const (
 	maxOwnerStorage   = int64(10 << 30)

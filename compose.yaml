@@ -7,6 +7,10 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:?POSTGRES_DB is required}?sslmode=disable
       UPLOAD_DIRECTORY: /data
+      OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-minio:9000}
+      OBJECT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-documind}
+      OBJECT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-documind-secret}
+      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-documind}
       DOCUMENT_PROCESSOR_GRPC_URL: document-processor:50051
       DOCUMENT_JOB_MAX_ATTEMPTS: ${DOCUMENT_JOB_MAX_ATTEMPTS:-5}
       DOCUMENT_JOB_INITIAL_BACKOFF: ${DOCUMENT_JOB_INITIAL_BACKOFF:-5s}
@@ -15,6 +19,7 @@ services:
       DOCUMENT_JOB_LEASE_RENEWAL: ${DOCUMENT_JOB_LEASE_RENEWAL:-30s}
       DOCUMENT_JOB_PROCESSING_TIMEOUT: ${DOCUMENT_JOB_PROCESSING_TIMEOUT:-30m}
       DOCUMENT_JOB_POLL_INTERVAL: ${DOCUMENT_JOB_POLL_INTERVAL:-1s}
+      DOCUMENT_JOB_WORKERS: ${DOCUMENT_JOB_WORKERS:-2}
       ANSWER_GENERATION_TIMEOUT: ${ANSWER_GENERATION_TIMEOUT:-5m}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
       AUTH_MODE: ${AUTH_MODE:-production}
@@ -24,12 +29,18 @@ services:
       AUTH_JWT_TTL: ${AUTH_JWT_TTL:-8h}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}
       AUTH_REQUIRE_HTTPS: ${AUTH_REQUIRE_HTTPS:-true}
+      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-25}
+      DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-5}
+      DB_CONN_MAX_LIFETIME: ${DB_CONN_MAX_LIFETIME:-30m}
+      DB_CONN_MAX_IDLE_TIME: ${DB_CONN_MAX_IDLE_TIME:-5m}
     volumes:
       - ./data:/data
     depends_on:
       db:
         condition: service_healthy
       document-processor:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     stop_grace_period: 30s
     healthcheck:
@@ -51,6 +62,10 @@ services:
       RETRIEVAL_LIMIT: ${RETRIEVAL_LIMIT:-5}
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen2.5:7b}
       OLLAMA_CHAT_TIMEOUT: ${OLLAMA_CHAT_TIMEOUT:-120}
+      GRPC_MAX_WORKERS: ${GRPC_MAX_WORKERS:-4}
+      INGESTION_CAPACITY: ${INGESTION_CAPACITY:-2}
+      QUESTION_CAPACITY: ${QUESTION_CAPACITY:-2}
+      EMBEDDING_CAPACITY: ${EMBEDDING_CAPACITY:-2}
     expose:
       - "8000"
       - "50051"
@@ -64,6 +79,23 @@ services:
       timeout: 10s
       start_period: 30s
       retries: 30
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-documind}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-documind-secret}
+    expose:
+      - "9000"
+      - "9001"
+    volumes:
+      - object_storage_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   ollama:
     image: ollama/ollama:latest
@@ -112,3 +144,4 @@ services:
 volumes:
   postgres_data:
   ollama_data:
+  object_storage_data:

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import type { QuestionHistoryItem } from "@/documents/document-types";
 
 export type AnswerSource = {
   chunkIndex: number;
@@ -16,6 +17,7 @@ export function useAnswerStream(documentId: string | null) {
   const [sources, setSources] = useState<AnswerSource[]>([]);
   const [isAsking, setIsAsking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [historyItem, setHistoryItem] = useState<QuestionHistoryItem | null>(null);
 
   const clear = () => {
     abortRef.current?.abort();
@@ -24,6 +26,7 @@ export function useAnswerStream(documentId: string | null) {
     setSources([]);
     setError(null);
     setIsAsking(false);
+    setHistoryItem(null);
   };
 
   useEffect(() => {
@@ -66,9 +69,10 @@ export function useAnswerStream(documentId: string | null) {
         const data = value.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
         const type = value.split("\n").find((line) => line.startsWith("event: "))?.slice(7);
         if (!data) return;
-        const payload = JSON.parse(data) as { ok?: boolean; text?: string; message?: string; sources?: AnswerSource[] };
+       const payload = JSON.parse(data) as { ok?: boolean; text?: string; message?: string; sources?: AnswerSource[]; history?: QuestionHistoryItem };
         if (type === "token") setAnswer((current) => current + (payload.text ?? ""));
         if (type === "sources") setSources(payload.sources ?? []);
+        if (type === "history" && payload.history) setHistoryItem({ ...payload.history, sources: typeof payload.history.sources === "string" ? JSON.parse(payload.history.sources || "[]") : payload.history.sources });
         if (type === "error") streamError = payload.message ?? "Could not complete the answer.";
         if (type === "done") {
           receivedDone = true;
@@ -109,5 +113,5 @@ export function useAnswerStream(documentId: string | null) {
     setError("Answer generation was stopped before completion.");
   };
 
-  return { answer, sources, isAsking, error, ask, stop, clear };
+  return { answer, sources, isAsking, error, historyItem, ask, stop, clear };
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { deleteDocument, listDocuments } from "@/documents/document-api";
-import type { ListedDocument, WorkspaceMessage } from "@/documents/document-types";
+import { deleteDocument, listDocuments, listQuestionHistory, retryDocument } from "@/documents/document-api";
+import type { ListedDocument, QuestionHistoryItem, WorkspaceMessage } from "@/documents/document-types";
 import { useDocumentProcessing } from "@/hooks/use-document-processing";
 
 export function useDocumentWorkspace() {
@@ -9,12 +9,15 @@ export function useDocumentWorkspace() {
   const [message, setMessage] = useState<WorkspaceMessage | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [history, setHistory] = useState<QuestionHistoryItem[]>([]);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   const { details, error: processingError, detailsById } = useDocumentProcessing(documents, selectedId);
 
   useEffect(() => {
     const controller = new AbortController();
     void listDocuments(controller.signal)
-      .then(setDocuments)
+      .then((response) => setDocuments(response.items))
       .catch((error) => {
         if (!controller.signal.aborted) {
           setMessage({
@@ -37,8 +40,18 @@ export function useDocumentWorkspace() {
     }));
   }, [detailsById]);
 
+  useEffect(() => {
+    if (!selectedId) return;
+    const controller = new AbortController();
+    void listQuestionHistory(selectedId, controller.signal).then(setHistory).catch(() => {
+      if (!controller.signal.aborted) setHistory([]);
+    });
+    return () => controller.abort();
+  }, [selectedId]);
+
   const selectDocument = (documentId: string) => {
     setSelectedId(documentId);
+    setHistory([]);
     setMessage(null);
   };
 
@@ -72,8 +85,22 @@ export function useDocumentWorkspace() {
     }
   };
 
+  const handleRetry = async (documentId: string) => {
+    setRetryingId(documentId);
+    try {
+      await retryDocument(documentId);
+      setDocuments((current) => current.map((document) => document.documentId === documentId ? { ...document, status: "queued", error: undefined } : document));
+      setMessage({ type: "success", text: "Processing restarted." });
+    } catch (error) {
+      setMessage({ type: "error", text: error instanceof Error ? error.message : "Could not retry document processing." });
+    } finally { setRetryingId(null); }
+  };
+
   return {
     documents,
+    filteredDocuments: documents.filter((document) => document.filename.toLowerCase().includes(search.toLowerCase().trim())),
+    search,
+    setSearch,
     selectedId,
     details,
     processingError,
@@ -86,5 +113,9 @@ export function useDocumentWorkspace() {
     handleUploaded,
     setPendingDeleteId,
     handleDelete,
+    history,
+    setHistory,
+    retryingId,
+    handleRetry,
   };
 }

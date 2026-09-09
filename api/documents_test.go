@@ -19,6 +19,7 @@ import (
 type memoryDocumentStore struct {
 	documents []document
 	chunks    []documentChunk
+	questions []documentQuestion
 	mutex     sync.Mutex
 }
 
@@ -72,6 +73,28 @@ func (s *memoryDocumentStore) DeleteOwned(ctx context.Context, ownerID, id strin
 	for i := range s.documents {
 		if s.documents[i].ID == id && (s.documents[i].OwnerID == ownerID || s.documents[i].OwnerID == "") {
 			s.documents = append(s.documents[:i], s.documents[i+1:]...)
+			filtered := s.questions[:0]
+			for _, question := range s.questions {
+				if question.DocumentID != id {
+					filtered = append(filtered, question)
+				}
+			}
+			s.questions = filtered
+			return nil
+		}
+	}
+	return gorm.ErrRecordNotFound
+}
+
+func (s *memoryDocumentStore) RetryOwned(_ context.Context, ownerID, id string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for i := range s.documents {
+		if s.documents[i].ID == id && s.documents[i].OwnerID == ownerID && s.documents[i].Status == "failed" {
+			s.documents[i].Status = "queued"
+			s.documents[i].ErrorMessage = nil
+			s.documents[i].NextAttemptAt = nil
+			s.documents[i].AttemptCount = 0
 			return nil
 		}
 	}
@@ -237,6 +260,25 @@ func (s *memoryDocumentStore) ListChunksOwned(ctx context.Context, ownerID, docu
 	return s.ListChunks(ctx, documentID)
 }
 
+func (s *memoryDocumentStore) CreateQuestion(_ context.Context, question documentQuestion) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.questions = append(s.questions, question)
+	return nil
+}
+
+func (s *memoryDocumentStore) ListQuestionsOwned(_ context.Context, ownerID, documentID string) ([]documentQuestion, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	result := make([]documentQuestion, 0)
+	for _, question := range s.questions {
+		if (question.OwnerID == ownerID || question.OwnerID == "") && question.DocumentID == documentID {
+			result = append(result, question)
+		}
+	}
+	return result, nil
+}
+
 func TestUploadPDF(t *testing.T) {
 	uploadDirectory := t.TempDir()
 	store := &memoryDocumentStore{}
@@ -338,5 +380,31 @@ func TestGetDocument(t *testing.T) {
 	}
 	if body["attemptCount"] != float64(2) || body["nextAttemptAt"] == nil {
 		t.Fatalf("retry metadata = %+v", body)
+	}
+}
+
+func TestListQuestionHistory(t *testing.T) {
+	store := &memoryDocumentStore{
+		documents: []document{{ID: "document-id", OwnerID: "", OriginalFilename: "document.pdf", Status: "completed"}},
+		questions: []documentQuestion{{ID: "question-id", DocumentID: "document-id", OwnerID: "", Question: "What is this?", Answer: "A test document.", Sources: `[{"chunkIndex":0,"text":"test","pageStart":1,"pageEnd":1}]`, CreatedAt: time.Now().UTC()}},
+	}
+	server := newServer(t.TempDir(), store)
+	request := httptest.NewRequest(http.MethodGet, "/documents/document-id/questions", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	var body []struct {
+		Question string `json:"question"`
+		Sources  []struct {
+			Text string `json:"text"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(body) != 1 || body[0].Question != "What is this?" || len(body[0].Sources) != 1 || body[0].Sources[0].Text != "test" {
+		t.Fatalf("history = %+v", body)
 	}
 }

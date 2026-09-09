@@ -34,15 +34,19 @@ func main() {
 	}
 	defer postgresStore.Close()
 	store := documentStore(postgresStore)
+	storage, err := configuredDocumentStorage(context.Background(), uploadDirectory)
+	if err != nil {
+		panic("configure document storage: " + err.Error())
+	}
 	workerConfig, err := loadWorkerConfig()
 	if err != nil {
 		panic("configure document worker: " + err.Error())
 	}
 
-	e := newServer(uploadDirectory, store)
+	e := newServer(uploadDirectory, store, storage)
 	rootContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	workerDone := startWorker(rootContext, uploadDirectory, store, workerConfig)
+	workerDone := startWorker(rootContext, storage, store, workerConfig)
 	startConfig := echo.StartConfig{Address: ":1323", GracefulTimeout: 30 * time.Second}
 	if err := startConfig.Start(rootContext, e); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		e.Logger.Error("failed to start server", "error", err)
@@ -91,7 +95,14 @@ func uploadDirectory() (string, error) {
 	return filepath.Join(dataDirectory, "documind", "uploads"), nil
 }
 
-func newServer(uploadDirectory string, store documentStore) *echo.Echo {
+func configuredDocumentStorage(ctx context.Context, directory string) (documentStorage, error) {
+	if getenv("OBJECT_STORAGE_ENDPOINT", "") != "" {
+		return newObjectStorage(ctx)
+	}
+	return newFilesystemStorage(directory), nil
+}
+
+func newServer(uploadDirectory string, store documentStore, storages ...documentStorage) *echo.Echo {
 	e := echo.New()
 
 	e.Use(middleware.RequestLogger())
@@ -115,7 +126,11 @@ func newServer(uploadDirectory string, store documentStore) *echo.Echo {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ready"})
 	})
 
-	handler := newDocumentHandler(uploadDirectory, store)
+	var storage documentStorage = newFilesystemStorage(uploadDirectory)
+	if len(storages) > 0 {
+		storage = storages[0]
+	}
+	handler := newDocumentHandler(uploadDirectory, store, storage)
 	e.GET("/metrics", handler.metrics.handler)
 	var database *gorm.DB
 	if postgresStore, ok := store.(*postgresDocumentStore); ok {
@@ -134,6 +149,8 @@ func newServer(uploadDirectory string, store documentStore) *echo.Echo {
 	documents.GET("/:id/chunks", handler.Chunks)
 	documents.GET("/:id/file", handler.File)
 	documents.DELETE("/:id", handler.Delete)
+	documents.POST("/:id/retry", handler.Retry)
+	documents.GET("/:id/questions", handler.Questions)
 	documents.POST("/:id/questions", handler.Ask)
 
 	return e

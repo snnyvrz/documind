@@ -7,8 +7,8 @@ import (
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	extractorpb "api/proto"
@@ -22,6 +22,7 @@ import (
 const maxGRPCMessageSize = maxUploadSize + (1 << 20)
 
 type workerConfig struct {
+	workers           int
 	maxAttempts       int
 	initialBackoff    time.Duration
 	maxBackoff        time.Duration
@@ -46,6 +47,7 @@ func (e *jobError) Error() string {
 
 func loadWorkerConfig() (workerConfig, error) {
 	config := workerConfig{
+		workers:           1,
 		maxAttempts:       5,
 		initialBackoff:    5 * time.Second,
 		maxBackoff:        5 * time.Minute,
@@ -55,6 +57,9 @@ func loadWorkerConfig() (workerConfig, error) {
 		pollInterval:      time.Second,
 	}
 	var err error
+	if config.workers, err = environmentInt("DOCUMENT_JOB_WORKERS", config.workers); err != nil {
+		return workerConfig{}, err
+	}
 	if config.maxAttempts, err = environmentInt("DOCUMENT_JOB_MAX_ATTEMPTS", config.maxAttempts); err != nil {
 		return workerConfig{}, err
 	}
@@ -107,33 +112,39 @@ func environmentDuration(name string, fallback time.Duration) (time.Duration, er
 	return result, nil
 }
 
-func startWorker(ctx context.Context, uploadDirectory string, store documentStore, config workerConfig) <-chan struct{} {
+func startWorker(ctx context.Context, storage documentStorage, store documentStore, config workerConfig) <-chan struct{} {
 	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			err := processNext(ctx, uploadDirectory, store, config)
-			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-				log.Printf("document worker: %v", err)
-			}
-			if err != nil {
+	var wait sync.WaitGroup
+	wait.Add(config.workers)
+	for index := 0; index < config.workers; index++ {
+		go func() {
+			defer wait.Done()
+			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-time.After(config.pollInterval):
+				default:
+				}
+				err := processNext(ctx, storage, store, config)
+				if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+					log.Printf("document worker: %v", err)
+				}
+				if err != nil {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(config.pollInterval):
+					}
 				}
 			}
-		}
-	}()
+		}()
+	}
+	go func() { wait.Wait(); close(done) }()
 	return done
 }
 
-func processNext(ctx context.Context, uploadDirectory string, store documentStore, config workerConfig) error {
+func processNext(ctx context.Context, storageInput any, store documentStore, config workerConfig) error {
+	storage := asDocumentStorage(storageInput)
 	leaseToken, err := documentID()
 	if err != nil {
 		return fmt.Errorf("create lease token: %w", err)
@@ -148,7 +159,7 @@ func processNext(ctx context.Context, uploadDirectory string, store documentStor
 	heartbeatDone := make(chan error, 1)
 	go maintainLease(heartbeatContext, cancelProcessing, store, claimed.ID, leaseToken, config, heartbeatDone)
 
-	text, pageCount, chunks, processingErr := processDocument(processingContext, uploadDirectory, claimed)
+	text, pageCount, chunks, processingErr := processDocument(processingContext, storage, claimed)
 	stopHeartbeat()
 	heartbeatErr := <-heartbeatDone
 	cancelProcessing()
@@ -164,6 +175,16 @@ func processNext(ctx context.Context, uploadDirectory string, store documentStor
 		return store.Fail(ctx, claimed.ID, leaseToken, processingErr.message)
 	}
 	return store.Retry(ctx, claimed.ID, leaseToken, time.Now().UTC().Add(retryBackoff(claimed.AttemptCount, config)))
+}
+
+func asDocumentStorage(value any) documentStorage {
+	if storage, ok := value.(documentStorage); ok {
+		return storage
+	}
+	if directory, ok := value.(string); ok {
+		return newFilesystemStorage(directory)
+	}
+	panic("unsupported document storage")
 }
 
 func maintainLease(ctx context.Context, cancelProcessing context.CancelFunc, store documentStore, id, leaseToken string, config workerConfig, done chan<- error) {
@@ -198,8 +219,13 @@ func retryBackoff(attempt int, config workerConfig) time.Duration {
 	return delay
 }
 
-func processDocument(ctx context.Context, uploadDirectory string, document *document) (string, uint32, []documentChunk, *jobError) {
-	pdf, err := os.ReadFile(filepath.Join(uploadDirectory, document.StoredPath))
+func processDocument(ctx context.Context, storage documentStorage, document *document) (string, uint32, []documentChunk, *jobError) {
+	file, err := storage.Get(ctx, document.StoredPath)
+	if err != nil {
+		return "", 0, nil, &jobError{cause: err, message: "could not read uploaded PDF", permanent: true}
+	}
+	defer file.Close()
+	pdf, err := io.ReadAll(file)
 	if err != nil {
 		return "", 0, nil, &jobError{cause: err, message: "could not read uploaded PDF", permanent: true}
 	}

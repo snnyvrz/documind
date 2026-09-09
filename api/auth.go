@@ -90,7 +90,7 @@ func newAuthenticator(database *gorm.DB) (*jwtAuthenticator, error) {
 		}
 		ttl = parsed
 	}
-	return &jwtAuthenticator{secret: []byte(secret), issuer: getenv("AUTH_JWT_ISSUER", defaultJWTIssuer), ttl: ttl, secureCookie: secureCookie, requireHTTPS: requireHTTPS, database: database, limiter: newAuthRateLimiter()}, nil
+	return &jwtAuthenticator{secret: []byte(secret), issuer: getenv("AUTH_JWT_ISSUER", defaultJWTIssuer), ttl: ttl, secureCookie: secureCookie, requireHTTPS: requireHTTPS, database: database, limiter: newAuthRateLimiter(database)}, nil
 }
 
 func (a *jwtAuthenticator) middleware(next echo.HandlerFunc) echo.HandlerFunc {

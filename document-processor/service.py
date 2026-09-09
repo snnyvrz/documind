@@ -1,6 +1,6 @@
 from concurrent import futures
 from io import BytesIO
-from threading import Event
+from threading import Event, Semaphore
 from typing import Any, Callable, Iterator
 
 import grpc
@@ -17,7 +17,10 @@ app = FastAPI(title="DocuMind document processor")
 draining = Event()
 
 GRPC_ADDRESS = "[::]:50051"
-GRPC_MAX_WORKERS = 4
+GRPC_MAX_WORKERS = int(os.environ.get("GRPC_MAX_WORKERS", "4"))
+INGESTION_CAPACITY = int(os.environ.get("INGESTION_CAPACITY", "2"))
+QUESTION_CAPACITY = int(os.environ.get("QUESTION_CAPACITY", "2"))
+EMBEDDING_CAPACITY = int(os.environ.get("EMBEDDING_CAPACITY", "2"))
 GRPC_MAX_MESSAGE_LENGTH = (20 * 1024 * 1024) + (1024 * 1024)
 
 
@@ -47,6 +50,19 @@ EMBEDDING_DIMENSIONS = int(os.environ.get("EMBEDDING_DIMENSIONS", "768"))
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "4000"))
 CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "400"))
 EMBEDDING_BATCH_SIZE = int(os.environ.get("EMBEDDING_BATCH_SIZE", "32"))
+
+ingestion_slots = Semaphore(INGESTION_CAPACITY)
+question_slots = Semaphore(QUESTION_CAPACITY)
+embedding_slots = Semaphore(EMBEDDING_CAPACITY)
+
+
+def acquire_slot(slot: Semaphore, context: grpc.ServicerContext, name: str) -> None:
+    if not slot.acquire(blocking=False):
+        context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, f"{name} capacity is full")
+
+
+def release_slot(slot: Semaphore) -> None:
+    slot.release()
 
 if CHUNK_SIZE <= 0 or CHUNK_OVERLAP < 0 or CHUNK_OVERLAP >= CHUNK_SIZE:
     raise ValueError("CHUNK_SIZE must be positive and CHUNK_OVERLAP must be smaller")
@@ -121,15 +137,19 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
     def EmbedQuestion(self, request: Any, context: grpc.ServicerContext) -> Any:
         if draining.is_set():
             context.abort(grpc.StatusCode.UNAVAILABLE, "processor is draining")
+        acquire_slot(embedding_slots, context, "question embedding")
         try:
             vector = embed([request.text])[0]
             return extractor_pb2.EmbedQuestionResponse(embedding=vector, dimensions=len(vector))
         except Exception as error:
             context.abort(grpc.StatusCode.UNAVAILABLE, f"could not embed question: {error}")
+        finally:
+            release_slot(embedding_slots)
 
     def AnswerQuestion(self, request: Any, context: grpc.ServicerContext) -> Iterator[Any]:
         if draining.is_set():
             context.abort(grpc.StatusCode.UNAVAILABLE, "processor is draining")
+        acquire_slot(question_slots, context, "answer")
         response: httpx.Response | None = None
         cancelled = Event()
 
@@ -154,10 +174,13 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
             if not context.is_active():
                 return
             context.abort(grpc.StatusCode.UNAVAILABLE, f"could not answer question: {error}")
+        finally:
+            release_slot(question_slots)
 
     def Process(self, request: Any, context: grpc.ServicerContext) -> Iterator[Any]:
         if draining.is_set():
             context.abort(grpc.StatusCode.UNAVAILABLE, "processor is draining")
+        acquire_slot(ingestion_slots, context, "ingestion")
         try:
             reader = PdfReader(BytesIO(request.pdf))
             page_texts = [page.extract_text() or "" for page in reader.pages]
@@ -173,6 +196,7 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
                 raise ValueError("PDF contains no extractable text")
             document_chunks = chunks(text, page_ranges)
         except Exception as error:
+            release_slot(ingestion_slots)
             context.abort(
                 grpc.StatusCode.INVALID_ARGUMENT,
                 f"could not process PDF: {error}",
@@ -189,11 +213,13 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
         )
         for batch_index in range(0, len(document_chunks), EMBEDDING_BATCH_SIZE):
             if not context.is_active() or draining.is_set():
+                release_slot(ingestion_slots)
                 return
             batch = document_chunks[batch_index : batch_index + EMBEDDING_BATCH_SIZE]
             try:
                 vectors = embed([value for value, _, _, _, _ in batch])
             except Exception as error:
+                release_slot(ingestion_slots)
                 context.abort(
                     grpc.StatusCode.UNAVAILABLE,
                     f"could not embed PDF: {error}",
@@ -216,6 +242,7 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
                     ],
                 )
             )
+        release_slot(ingestion_slots)
 
 
 def serve_grpc() -> None:

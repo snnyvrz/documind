@@ -112,6 +112,54 @@ func TestPostgresExpiredLeaseIsReclaimedAndStaleWorkerIsFenced(t *testing.T) {
 	}
 }
 
+func TestPostgresConcurrentUploadReservationsRespectStorageQuota(t *testing.T) {
+	store := integrationStore(t)
+	owner := "quota-owner-" + time.Now().UTC().Format("150405.000000000")
+	defer store.database.Exec("DELETE FROM upload_reservations WHERE owner_id = ?", owner)
+	defer store.database.Exec("DELETE FROM db_owner_usages WHERE owner_id = ?", owner)
+
+	const attempts = 4
+	results := make(chan error, attempts)
+	start := make(chan struct{})
+	for index := 0; index < attempts; index++ {
+		go func(index int) {
+			<-start
+			reservation := "reservation-" + owner + "-" + string(rune('a'+index))
+			results <- store.ReserveUpload(context.Background(), owner, reservation, reservation, maxOwnerStorage/2, time.Now().UTC().Add(time.Hour))
+		}(index)
+	}
+	close(start)
+	accepted := 0
+	for index := 0; index < attempts; index++ {
+		if err := <-results; err == nil {
+			accepted++
+		} else if !errors.Is(err, errQuotaExceeded) {
+			t.Fatalf("reservation error = %v", err)
+		}
+	}
+	if accepted != 2 {
+		t.Fatalf("accepted reservations = %d, want 2", accepted)
+	}
+}
+
+func TestPostgresRateLimitIsSharedAcrossStoreInstances(t *testing.T) {
+	first := integrationStore(t)
+	second := integrationStore(t)
+	key := "rate-key-" + time.Now().UTC().Format("150405.000000000")
+	defer first.database.Exec("DELETE FROM rate_limit_buckets WHERE key = ?", key)
+	allowed, err := first.AllowRate(context.Background(), "integration", key, 1, time.Hour, time.Now().UTC())
+	if err != nil || !allowed {
+		t.Fatalf("first rate admission = %v, %v", allowed, err)
+	}
+	allowed, err = second.AllowRate(context.Background(), "integration", key, 1, time.Hour, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("second rate admission error = %v", err)
+	}
+	if allowed {
+		t.Fatal("second store bypassed shared rate limit")
+	}
+}
+
 func TestPostgresExhaustedJobFailsWhenQueueIsEmpty(t *testing.T) {
 	store := integrationStore(t)
 	doc := integrationDocument(t, store, "queued")

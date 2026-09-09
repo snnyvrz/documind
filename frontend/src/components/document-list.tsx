@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import type { ListedDocument } from "@/documents/document-types";
-import { FileText, LoaderCircle, Trash2 } from "lucide-react";
+import { FileText, LoaderCircle, RotateCcw, Search, Trash2 } from "lucide-react";
 
 type Props = {
   documents: ListedDocument[];
@@ -8,6 +8,10 @@ type Props = {
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   deletingId: string | null;
+  search: string;
+  onSearch: (value: string) => void;
+  onRetry: (id: string) => void;
+  retryingId: string | null;
 };
 
 export function DocumentList({
@@ -16,24 +20,32 @@ export function DocumentList({
   onSelect,
   onDelete,
   deletingId,
+  search,
+  onSearch,
+  onRetry,
+  retryingId,
 }: Props) {
   return (
-    <section className="space-y-3">
+    <section className="flex min-h-0 flex-col gap-4">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-          Your documents
+          Documents
         </h2>
         <span className="text-xs text-muted-foreground">
           {documents.length} total
         </span>
       </div>
+      <label className="relative block">
+        <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" aria-hidden="true" />
+        <input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search documents" aria-label="Search documents" className="h-9 w-full rounded-xl border bg-background pl-9 pr-3 text-sm outline-none focus-visible:ring-3 focus-visible:ring-ring/30" />
+      </label>
       {documents.length === 0 ? (
         <p className="border border-dashed p-5 text-sm text-muted-foreground">
           Uploaded documents will appear here.
         </p>
       ) : (
         <div className="divide-y border">
-          {documents.map((document) => (
+          {documents.filter((document) => document.filename.toLowerCase().includes(search.toLowerCase().trim())).map((document) => (
             <div
               key={document.documentId}
               className={`flex items-center gap-3 p-3 ${selectedId === document.documentId ? "bg-accent" : ""}`}
@@ -55,7 +67,6 @@ export function DocumentList({
                     {document.status === "completed"
                       ? `${document.pageCount ?? 0} pages`
                       : document.status}
-                    {document.error ? `: ${document.error}` : ""}
                   </span>
                 </span>
               </button>
@@ -67,6 +78,7 @@ export function DocumentList({
                       aria-label="Processing"
                     />
                   )}
+                {document.status === "failed" && <Button type="button" variant="ghost" size="icon" aria-label={`Retry ${document.filename}`} disabled={retryingId === document.documentId} onClick={() => onRetry(document.documentId)}><RotateCcw className="size-4" aria-hidden="true" /></Button>}
                 <Button
                   type="button"
                   variant="ghost"
