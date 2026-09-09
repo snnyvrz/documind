@@ -1,15 +1,6 @@
 import { Button } from "@/components/ui/button";
-import type { DocumentStatus } from "@/hooks/use-document-processing";
+import type { ListedDocument } from "@/documents/document-types";
 import { FileText, LoaderCircle, Trash2 } from "lucide-react";
-
-export type ListedDocument = {
-  documentId: string;
-  filename: string;
-  status: DocumentStatus;
-  pageCount?: number;
-  createdAt: string;
-  error?: string;
-};
 
 type Props = {
   documents: ListedDocument[];

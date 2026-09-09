@@ -1,17 +1,6 @@
 import { useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api";
-import type { ListedDocument } from "@/components/document-list";
-
-export type DocumentStatus = "queued" | "processing" | "completed" | "failed";
-
-export type DocumentDetails = {
-  documentId: string;
-  filename: string;
-  status: DocumentStatus;
-  pageCount?: number;
-  text?: string;
-  error?: string;
-};
+import { getDocument } from "@/documents/document-api";
+import type { DocumentDetails, ListedDocument } from "@/documents/document-types";
 
 export function useDocumentProcessing(documents: ListedDocument[], documentId: string | null) {
   const [detailsById, setDetailsById] = useState<Record<string, DocumentDetails>>({});
@@ -38,10 +27,7 @@ export function useDocumentProcessing(documents: ListedDocument[], documentId: s
       if (!immediate && document.hidden) return;
       try {
         const responses = await Promise.all(ids.map(async (id) => {
-          const response = await apiFetch(`/documents/${id}`, { signal: controller.signal });
-          const body = (await response.json().catch(() => null)) as DocumentDetails | { error?: string } | null;
-          if (!response.ok) throw new Error(body && "error" in body ? body.error : "Could not load document.");
-          return body as DocumentDetails;
+          return getDocument(id, controller.signal);
         }));
         if (!active) return;
         setDetailsById((current) => Object.fromEntries([
