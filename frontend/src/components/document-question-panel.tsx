@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { PdfPreview } from "@/components/pdf-preview";
+import { RetrievedSourceCard } from "@/components/retrieved-source-card";
 import { useAnswerStream } from "@/hooks/use-answer-stream";
 import { useState } from "react";
 
@@ -10,6 +12,7 @@ type Props = {
 
 export function DocumentQuestionPanel({ documentId, filename, pageCount }: Props) {
   const [question, setQuestion] = useState("");
+  const [previewPage, setPreviewPage] = useState<number | null>(null);
   const answerStream = useAnswerStream(documentId);
 
   const ask = () => void answerStream.ask(question);
@@ -49,6 +52,28 @@ export function DocumentQuestionPanel({ documentId, filename, pageCount }: Props
           <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Answer</p>
           <p className="whitespace-pre-wrap text-sm leading-7">{answerStream.answer}</p>
         </div>
+      )}
+      {answerStream.sources.length > 0 && (
+        <div className="space-y-3 rounded-2xl border bg-background/40 p-4 sm:p-5">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Retrieved passages</p>
+            <p className="mt-1 text-xs text-muted-foreground">These passages were retrieved as context. They are not claim-level citations.</p>
+          </div>
+          <div className="space-y-2">
+            {answerStream.sources.map((source) => (
+              <RetrievedSourceCard key={source.chunkIndex} source={source} onOpen={setPreviewPage} />
+            ))}
+          </div>
+        </div>
+      )}
+      {previewPage !== null && (
+        <PdfPreview
+          documentId={documentId}
+          filename={filename}
+          pageCount={pageCount}
+          initialPage={previewPage}
+          onClose={() => setPreviewPage(null)}
+        />
       )}
     </section>
   );

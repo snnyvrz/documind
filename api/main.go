@@ -132,6 +132,7 @@ func newServer(uploadDirectory string, store documentStore) *echo.Echo {
 	documents.GET("", handler.List)
 	documents.GET("/:id", handler.Get)
 	documents.GET("/:id/chunks", handler.Chunks)
+	documents.GET("/:id/file", handler.File)
 	documents.DELETE("/:id", handler.Delete)
 	documents.POST("/:id/questions", handler.Ask)
 

@@ -33,11 +33,12 @@ test.describe("mocked API document workflows", () => {
     await page.route("**/documents/mock-document-id", async (route) => {
       await route.fulfill({
         contentType: "application/json",
-        body: JSON.stringify({
-          documentId: "mock-document-id",
-          filename: "sample-document.pdf",
-          status: "completed",
-          text: "Extracted text from the mocked document.",
+           body: JSON.stringify({
+             documentId: "mock-document-id",
+             filename: "sample-document.pdf",
+             status: "completed",
+             pageCount: 2,
+             text: "Extracted text from the mocked document.",
         }),
       });
     });
@@ -48,7 +49,7 @@ test.describe("mocked API document workflows", () => {
         body: [
           "event: token\ndata: {\"text\":\"The document explains \"}\n\n",
           "event: token\ndata: {\"text\":\"document processing.\"}\n\n",
-          "event: sources\ndata: {\"sources\":[{\"chunkIndex\":0,\"text\":\"Document processing and retrieval.\"}]}\n\n",
+          "event: sources\ndata: {\"sources\":[{\"chunkIndex\":0,\"text\":\"Document processing and retrieval.\",\"pageStart\":1,\"pageEnd\":1}]}\n\n",
           "event: done\ndata: {\"ok\":true}\n\n",
         ].join(""),
       });
@@ -56,7 +57,7 @@ test.describe("mocked API document workflows", () => {
     await page.route("**/documents/mock-document-id/chunks", async (route) => {
       await route.fulfill({
         contentType: "application/json",
-        body: JSON.stringify([{ chunkIndex: 0, text: "Document processing and retrieval.", pageStart: 1, pageEnd: 1 }]),
+          body: JSON.stringify([{ chunkIndex: 0, text: "Document processing and retrieval.", pageStart: 1, pageEnd: 1 }]),
       });
     });
 
@@ -72,7 +73,15 @@ test.describe("mocked API document workflows", () => {
 
     await expect(page.getByText("The document explains document processing.")).toBeVisible();
     await expect(page.getByText("Extracted text from the mocked document.")).not.toBeVisible();
+    await expect(page.getByText("Retrieved passages")).toBeVisible();
     await expect(page.getByText("Document processing and retrieval.")).not.toBeVisible();
+    await page.getByText("Retrieved passage 1").click();
+    await expect(page.getByText("Document processing and retrieval.")).toBeVisible();
+    await page.getByRole("button", { name: "Open in PDF" }).click();
+    await expect(page.getByRole("dialog", { name: "Preview sample-document.pdf" })).toBeVisible();
+    await expect(page.getByRole("spinbutton", { name: "PDF page number" })).toHaveValue("1");
+    await page.getByRole("button", { name: "Next PDF page" }).click();
+    await expect(page.getByRole("spinbutton", { name: "PDF page number" })).toHaveValue("2");
   });
 
   test("confirms document deletion in a modal", async ({ page }) => {
@@ -102,8 +111,9 @@ test.describe("mocked API document workflows", () => {
     await page.getByRole("button", { name: "Delete old-report.pdf" }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
     await expect(page.getByText("This will permanently remove")).toBeVisible();
-    await page.getByRole("button", { name: "Cancel" }).click();
+    await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog")).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "Delete old-report.pdf" })).toBeFocused();
     await page.getByRole("button", { name: "Delete old-report.pdf" }).click();
     await page.getByRole("button", { name: "Delete document" }).click();
     await expect(page.getByText("old-report.pdf")).not.toBeVisible();

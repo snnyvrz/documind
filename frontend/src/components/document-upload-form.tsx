@@ -15,7 +15,7 @@ export const DocumentUploadForm = () => {
   } | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
-  const { details, error: processingError } = useDocumentProcessing(selectedId);
+  const { details, error: processingError, detailsById } = useDocumentProcessing(documents, selectedId);
 
   useEffect(() => {
     void apiFetch("/documents")
@@ -35,12 +35,9 @@ export const DocumentUploadForm = () => {
   }, []);
 
   useEffect(() => {
-    if (
-      !selectedId ||
-      !details ||
-      (details.status !== "completed" && details.status !== "failed")
-    )
+    if (!details || details.documentId !== selectedId || (details.status !== "completed" && details.status !== "failed"))
       return;
+    // Persist terminal status in the list after the polling request completes.
     Promise.resolve().then(() => {
       setDocuments((current) =>
         current.map((document) =>
@@ -56,6 +53,17 @@ export const DocumentUploadForm = () => {
       );
     });
   }, [details, selectedId]);
+
+  useEffect(() => {
+    if (!Object.keys(detailsById).length) return;
+    // Polling is an external subscription; mirror terminal results into the list.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDocuments((current) => current.map((document) => {
+      const details = detailsById[document.documentId];
+      if (!details || (details.status !== "completed" && details.status !== "failed")) return document;
+      return { ...document, status: details.status, pageCount: details.pageCount, error: details.error };
+    }));
+  }, [detailsById]);
 
   const selectDocument = (nextId: string) => {
     setSelectedId(nextId);
@@ -125,7 +133,10 @@ export const DocumentUploadForm = () => {
       {processingError && (
         <p className="text-sm text-destructive">{processingError}</p>
       )}
-      {selectedId && details?.status === "completed" && (
+      {selectedId && (!details || details.documentId !== selectedId || (details.status !== "completed" && details.status !== "failed")) && (
+        <p className="rounded-3xl border bg-card/40 p-5 text-sm text-muted-foreground">Loading document details...</p>
+      )}
+      {selectedId && details?.documentId === selectedId && details.status === "completed" && (
         <DocumentQuestionPanel
           documentId={selectedId}
           filename={details.filename}

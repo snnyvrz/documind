@@ -9,7 +9,8 @@ import { z } from "zod";
 const uploadSchema = z.object({
   document: z
     .instanceof(File, { error: "Choose a PDF document to continue." })
-    .refine((file) => file.type === "application/pdf", "Only PDF documents are supported."),
+    .refine((file) => file.type === "application/pdf", "Only PDF documents are supported.")
+    .refine((file) => file.size <= 20 * 1024 * 1024, "PDF files must be 20 MB or smaller."),
 });
 
 type UploadFormValues = z.infer<typeof uploadSchema>;
@@ -22,6 +23,7 @@ type Props = {
 
 export function DocumentUploader({ onUploaded, onError, onSuccess }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const submittingRef = useRef(false);
   const [file, setFile] = useState<File>();
   const [isDragging, setIsDragging] = useState(false);
   const {
@@ -38,6 +40,10 @@ export function DocumentUploader({ onUploaded, onError, onSuccess }: Props) {
       setError("document", { message: "Only PDF documents are supported." });
       return;
     }
+    if (nextFile.size > 20 * 1024 * 1024) {
+      setError("document", { message: "PDF files must be 20 MB or smaller." });
+      return;
+    }
     setValue("document", nextFile, { shouldValidate: true });
     setFile(nextFile);
   };
@@ -49,6 +55,8 @@ export function DocumentUploader({ onUploaded, onError, onSuccess }: Props) {
   };
 
   const onSubmit = async (values: UploadFormValues) => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     const formData = new FormData();
     formData.append("file", values.document);
     try {
@@ -65,6 +73,8 @@ export function DocumentUploader({ onUploaded, onError, onSuccess }: Props) {
       removeFile();
     } catch (error) {
       onError(error instanceof Error ? error.message : "The document could not be uploaded.");
+    } finally {
+      submittingRef.current = false;
     }
   };
 
@@ -83,11 +93,11 @@ export function DocumentUploader({ onUploaded, onError, onSuccess }: Props) {
         role="button"
         tabIndex={0}
         aria-label="Upload a PDF document"
-        onClick={() => inputRef.current?.click()}
+        onClick={() => !isSubmitting && inputRef.current?.click()}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            inputRef.current?.click();
+            if (!isSubmitting) inputRef.current?.click();
           }
         }}
         onDragEnter={(event) => {
@@ -102,7 +112,7 @@ export function DocumentUploader({ onUploaded, onError, onSuccess }: Props) {
         onDrop={(event) => {
           event.preventDefault();
           setIsDragging(false);
-          selectFile(event.dataTransfer.files[0]);
+          if (!isSubmitting) selectFile(event.dataTransfer.files[0]);
         }}
         className={`group flex min-h-56 cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed px-6 text-center transition-colors ${isDragging ? "border-primary bg-accent" : "border-border bg-card/40 hover:border-primary/60 hover:bg-accent/50"}`}
       >
@@ -131,13 +141,13 @@ export function DocumentUploader({ onUploaded, onError, onSuccess }: Props) {
             <p className="truncate text-sm font-medium">{file.name}</p>
             <p className="text-xs text-muted-foreground">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
           </div>
-          <Button type="button" variant="ghost" size="icon" aria-label="Remove selected document" onClick={removeFile}>
+          <Button type="button" variant="ghost" size="icon" aria-label="Remove selected document" onClick={removeFile} disabled={isSubmitting}>
             <X className="size-4" aria-hidden="true" />
           </Button>
         </div>
       )}
       <div className="flex justify-end">
-        <Button type="submit" disabled={!file}>
+        <Button type="submit" disabled={!file || isSubmitting}>
           {isSubmitting ? "Uploading..." : "Upload document"}
         </Button>
       </div>

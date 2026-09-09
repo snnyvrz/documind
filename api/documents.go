@@ -171,6 +171,27 @@ func (h *documentHandler) Chunks(c *echo.Context) error {
 	return c.JSON(http.StatusOK, result)
 }
 
+func (h *documentHandler) File(c *echo.Context) error {
+	document, err := h.store.FindOwned(c.Request().Context(), principal(c), c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
+	}
+	path := filepath.Join(h.uploadDirectory, document.StoredPath)
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "document file not found"})
+		}
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not open document file"})
+	}
+	defer file.Close()
+
+	c.Response().Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", filepath.Base(document.OriginalFilename)))
+	c.Response().Header().Set("Content-Type", document.MIMEType)
+	http.ServeContent(c.Response(), c.Request(), document.OriginalFilename, document.UpdatedAt, file)
+	return nil
+}
+
 func (h *documentHandler) Delete(c *echo.Context) error {
 	id := c.Param("id")
 	document, err := h.store.FindOwned(c.Request().Context(), principal(c), id)

@@ -82,8 +82,14 @@ For local service development:
 Start all services with:
 
 ```sh
+cp .env.example .env
 docker compose up --build
 ```
+
+The root `.env` is loaded by Docker Compose and configures the full stack. It
+must contain the PostgreSQL credentials and production authentication settings,
+including an `AUTH_JWT_SECRET` with at least 32 characters. Keep this file
+local; it is ignored by Git.
 
 Open the application at [http://localhost:8080](http://localhost:8080).
 
@@ -138,7 +144,7 @@ Run the API locally:
    docker compose up -d db
    ```
 
-2. Configure the local environment:
+2. Configure the API-only local environment:
 
    ```sh
    cp api/.env.example api/.env
@@ -156,6 +162,21 @@ Run the API locally:
 
 The API loads `api/.env` with `godotenv`. `DATABASE_URL` is required. The
 default local upload directory is `../data` when using the example settings.
+This file is separate from the root `.env`: `api/.env` is used by `go run .`,
+while the root `.env` is used by Docker Compose.
+
+To reset only the local PostgreSQL database while preserving the Ollama model
+cache, run:
+
+```sh
+docker compose stop db
+docker compose rm -f db
+docker volume rm documind_postgres_data
+docker compose up --build
+```
+
+This removes PostgreSQL data and credentials, but does not remove the
+`documind_ollama_data` volume or uploaded PDFs in `data/`.
 
 ## Extractor Development
 

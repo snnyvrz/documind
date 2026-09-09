@@ -4,8 +4,10 @@ import { apiFetch } from "@/lib/api";
 export type AnswerSource = {
   chunkIndex: number;
   text: string;
-  pageStart?: number;
-  pageEnd?: number;
+  startOffset?: number;
+  endOffset?: number;
+  pageStart: number;
+  pageEnd: number;
 };
 
 export function useAnswerStream(documentId: string | null) {
