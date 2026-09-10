@@ -111,6 +111,47 @@ test.describe("mocked API document workflows", () => {
     await expect(page.getByRole("spinbutton", { name: "PDF page number" })).toHaveValue("2");
   });
 
+  test("resets selected history and preview when switching completed documents", async ({ page }) => {
+    const documents = [
+      { documentId: "first-document", filename: "first-report.pdf", status: "completed", pageCount: 2, createdAt: new Date().toISOString() },
+      { documentId: "second-document", filename: "second-report.pdf", status: "completed", pageCount: 3, createdAt: new Date().toISOString() },
+    ];
+    const history = {
+      "first-document": [{ id: "first-history", documentId: "first-document", question: "What is the first report about?", answer: "The first report is about document processing.", sources: [{ chunkIndex: 0, text: "First report source", pageStart: 2, pageEnd: 2 }], createdAt: new Date().toISOString() }],
+      "second-document": [{ id: "second-history", documentId: "second-document", question: "What is the second report about?", answer: "The second report is about retrieval.", sources: [{ chunkIndex: 0, text: "Second report source", pageStart: 1, pageEnd: 1 }], createdAt: new Date().toISOString() }],
+    };
+
+    await page.route("**/documents", async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: documents, hasMore: false }) });
+    });
+    await page.route(/\/documents\/(first-document|second-document)$/, async (route) => {
+      const document = documents.find((item) => route.request().url().endsWith(item.documentId));
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(document) });
+    });
+    await page.route(/\/documents\/(first-document|second-document)\/questions$/, async (route) => {
+      const documentId = route.request().url().includes("first-document") ? "first-document" : "second-document";
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(history[documentId]) });
+    });
+
+    await page.goto("/");
+    await expect(page.getByText("first-report.pdf")).toBeVisible();
+    await page.getByRole("button", { name: /first-report\.pdf 2 pages/ }).click();
+    await expect(page.getByText("Question history")).toBeVisible();
+    await page.getByRole("button", { name: /What is the first report about\?/ }).click();
+    await expect(page.locator("p.whitespace-pre-wrap").filter({ hasText: "The first report is about document processing." })).toBeVisible();
+    await page.getByText("Retrieved passage 1").click();
+    await page.getByRole("button", { name: "Open in PDF" }).click();
+    await expect(page.getByRole("dialog", { name: "Preview first-report.pdf" })).toBeVisible();
+    await page.getByRole("button", { name: "Close PDF preview" }).click();
+
+    await page.getByRole("button", { name: /second-report\.pdf 3 pages/ }).click();
+    await expect(page.locator("p.whitespace-pre-wrap").filter({ hasText: "The second report is about retrieval." })).not.toBeVisible();
+    await expect(page.locator("p.whitespace-pre-wrap").filter({ hasText: "The first report is about document processing." })).not.toBeVisible();
+    await expect(page.getByRole("dialog", { name: "Preview first-report.pdf" })).not.toBeVisible();
+    await expect(page.getByRole("button", { name: /What is the second report about\?/ })).toBeVisible();
+  });
+
   test("confirms document deletion in a modal", async ({ page }) => {
     await page.route("**/documents", async (route) => {
       if (route.request().method() === "GET") {

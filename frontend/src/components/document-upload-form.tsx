@@ -59,6 +59,7 @@ export const DocumentUploadForm = () => {
       )}
       {workspace.selectedId && workspace.details?.documentId === workspace.selectedId && workspace.details.status === "completed" && (
         <DocumentQuestionPanel
+          key={workspace.selectedId}
           documentId={workspace.selectedId}
           filename={workspace.details.filename}
           pageCount={workspace.details.pageCount}
