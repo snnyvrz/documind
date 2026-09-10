@@ -8,7 +8,7 @@ DocuMind: a PDF-document upload and embedding service. The repo contains indepen
 - `document-processor/` — Python 3.14 `uv` project. FastAPI health server on `:8000`, gRPC processor on `:50051`, isolated resource-limited PDF extraction, paragraph/token-aware chunking, and Ollama embedding/chat integration. Scanned PDFs without extractable text are rejected because OCR is not enabled.
 - `frontend/` — React 19 + Vite 8 + Tailwind v4 + shadcn/ui. **Bun** is the package manager (`bun.lock` committed; never add a `package-lock.json`). Path alias `@/*` → `src/*`. React Compiler is enabled via `@rolldown/plugin-babel` + `reactCompilerPreset` in `vite.config.ts`. Document polling and answer SSE streaming live in cancellation-aware hooks; the current UI displays the generated answer without rendering extracted text, chunks, or source citations.
 - `proto/` — shared protobuf contract; generated bindings are committed under `api/proto/` and `document-processor/generated/`.
-- `compose.yaml` — full-stack run: PostgreSQL (`db`, port 5432), Ollama, `document-processor`, `api` (1323), and `frontend` under nginx (8080, proxies `/documents` → `api`). Uploaded PDFs are bind-mounted from host `data/` to `/data` in the API container; PostgreSQL and Ollama use named volumes.
+- `compose.yaml` — full-stack run: PostgreSQL (`db`, port 5432), Ollama, MinIO object storage, `document-processor`, `api` (1323), and `frontend` under nginx (8080, proxies `/documents` → `api`). PostgreSQL, Ollama, and object storage use named volumes.
 
 ## Commands
 
@@ -61,4 +61,5 @@ CI-equivalent checks:
 - The RAG evaluator requires login or registration credentials, preserves the authentication cookie, rejects failed document processing, and requires a successful SSE `done` event with `ok: true`.
 - API metrics are shared by the HTTP handler and worker. They count accepted/rejected uploads, terminal processing failures, and answer outcomes; answer latency is a Prometheus histogram; queue depth and oldest queued age are refreshed from database state.
 - Durable upload and answer quota admission performs owner-scoped expired-reservation recovery in the same transaction. Startup performs the all-owner recovery; usage counters are rebuilt from documents and reservation rows, making recovery idempotent and safe after crashes.
+- Document metadata, committed usage, and upload reservation state must be committed in one PostgreSQL transaction. Storage writes remain outside the transaction; failed commits trigger best-effort deletion and startup reconciliation removes stale unreferenced objects after `UPLOAD_ORPHAN_MIN_AGE`.
 - `data/`, `api/.env`, and `api/tmp/` are gitignored working-state (uploads, local env, air build artifacts).

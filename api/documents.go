@@ -141,12 +141,18 @@ func (h *documentHandler) Upload(c *echo.Context) error {
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
-	if err := h.store.CreateOwned(request.Context(), principal(c), document); err != nil {
+	if atomic, ok := h.store.(atomicUploadStore); ok && hasDurableQuota {
+		if err := atomic.CreateOwnedAndCommitUpload(request.Context(), owner, document, reservationID); err != nil {
+			_ = h.storage.Delete(context.Background(), storedPath)
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not commit document metadata and upload quota"})
+		}
+	} else if err := h.store.CreateOwned(request.Context(), principal(c), document); err != nil {
 		_ = h.storage.Delete(context.Background(), storedPath)
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not save document metadata"})
-	}
-	if hasDurableQuota {
+	} else if hasDurableQuota {
 		if err := durableQuota.CommitUpload(request.Context(), reservationID); err != nil {
+			_ = h.store.DeleteOwned(context.Background(), owner, documentID)
+			_ = h.storage.Delete(context.Background(), storedPath)
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not commit upload quota"})
 		}
 	}

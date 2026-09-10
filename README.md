@@ -31,8 +31,8 @@ applications and provides PostgreSQL for local full-stack development.
 PDF processing is asynchronous:
 
 1. The frontend uploads a PDF to `POST /documents`.
-2. The Go API validates the PDF magic bytes and stores it under `data/`.
-3. The API stores a database record with status `queued` and returns `202 Accepted`.
+2. The Go API validates the PDF magic bytes and stores it under `data/` or in the configured object store.
+3. The API commits the document metadata and upload quota accounting in one PostgreSQL transaction, then returns `202 Accepted`.
 4. A background worker claims queued documents, increments their attempt count,
    and marks them `processing` under a renewable lease.
 5. The worker sends the PDF bytes to the Python document processor over gRPC.
@@ -53,6 +53,12 @@ PDF processing is asynchronous:
 
 The document processor handles PDFs with embedded text. Scanned PDFs require an
 OCR implementation, which can be added later.
+
+Database metadata and upload quota commitment are atomic. Storage writes are
+intentionally outside that transaction: a failed database commit triggers
+best-effort deletion, while startup reconciliation removes old unreferenced
+objects using `UPLOAD_ORPHAN_MIN_AGE`. Storage cleanup failures do not block API
+startup or alter database accounting.
 
 ## Repository Layout
 
@@ -454,6 +460,7 @@ The main API environment variables are:
 | --- | --- | --- |
 | `DATABASE_URL` | PostgreSQL connection string, using the required production database variables | `postgres://${POSTGRES_USER}@db:5432/${POSTGRES_DB}?sslmode=disable` |
 | `UPLOAD_DIRECTORY` | Directory where uploaded PDFs are stored | `/data` |
+| `UPLOAD_ORPHAN_MIN_AGE` | Minimum age before an unreferenced uploaded object is removed | `1h` |
 | `DOCUMENT_PROCESSOR_GRPC_URL` | gRPC address of the document processor | `document-processor:50051` |
 | `DOCUMENT_JOB_MAX_ATTEMPTS` | Maximum processing attempts before permanent failure | `5` |
 | `DOCUMENT_JOB_INITIAL_BACKOFF` | Delay after the first temporary failure | `5s` |
@@ -482,12 +489,14 @@ The main API environment variables are:
 | `EMBEDDING_BATCH_SIZE` | Chunks embedded per streamed batch | `32` |
 | `RETRIEVAL_LIMIT` | Number of nearest chunks supplied to answer generation | `5` |
 
-Quota reservations are crash-safe. On API startup, expired upload and answer
+Quota reservations are crash-safe. Document metadata and upload quota commitment
+are atomic in one database transaction. On API startup, expired upload and answer
 reservations are reclaimed in a transaction and per-owner usage counters are
 reconciled from documents and reservation rows. The same owner-scoped recovery
 runs transactionally before upload and answer quota admission, so expired
 reservations do not block an account while the API remains running. No extra
-configuration is required.
+configuration is required for quota recovery. Object-storage reconciliation is
+separate and uses `UPLOAD_ORPHAN_MIN_AGE` to avoid deleting recent uploads.
 
 The `/metrics` endpoint exposes Prometheus text metrics for accepted and rejected
 uploads, terminal document-processing failures, answer successes and failures,

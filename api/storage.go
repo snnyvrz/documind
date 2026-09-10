@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -15,6 +16,12 @@ type documentStorage interface {
 	Put(context.Context, string, io.Reader, int64, string) error
 	Get(context.Context, string) (io.ReadCloser, error)
 	Delete(context.Context, string) error
+	List(context.Context, string) ([]storageObject, error)
+}
+
+type storageObject struct {
+	Key          string
+	LastModified time.Time
 }
 
 type filesystemStorage struct{ root string }
@@ -61,6 +68,33 @@ func (s *filesystemStorage) Delete(_ context.Context, key string) error {
 	return err
 }
 
+func (s *filesystemStorage) List(_ context.Context, prefix string) ([]storageObject, error) {
+	root := s.path(prefix)
+	objects := make([]storageObject, 0)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		key, err := filepath.Rel(s.root, path)
+		if err != nil {
+			return err
+		}
+		objects = append(objects, storageObject{Key: filepath.ToSlash(key), LastModified: info.ModTime()})
+		return nil
+	})
+	return objects, err
+}
+
 type objectStorage struct {
 	client *minio.Client
 	bucket string
@@ -100,4 +134,43 @@ func (s *objectStorage) Get(ctx context.Context, key string) (io.ReadCloser, err
 
 func (s *objectStorage) Delete(ctx context.Context, key string) error {
 	return s.client.RemoveObject(ctx, s.bucket, strings.TrimPrefix(key, "/"), minio.RemoveObjectOptions{})
+}
+
+func (s *objectStorage) List(ctx context.Context, prefix string) ([]storageObject, error) {
+	objects := make([]storageObject, 0)
+	for object := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: strings.TrimPrefix(prefix, "/"), Recursive: true}) {
+		if object.Err != nil {
+			return nil, object.Err
+		}
+		objects = append(objects, storageObject{Key: object.Key, LastModified: object.LastModified})
+	}
+	return objects, nil
+}
+
+func reconcileOrphanedUploads(ctx context.Context, storage documentStorage, references uploadReferenceStore) error {
+	objects, err := storage.List(ctx, "documents/")
+	if err != nil {
+		return err
+	}
+	minimumAge := environmentDurationDefault("UPLOAD_ORPHAN_MIN_AGE", time.Hour)
+	cutoff := time.Now().UTC().Add(-minimumAge)
+	for _, object := range objects {
+		if object.LastModified.After(cutoff) {
+			continue
+		}
+		parts := strings.Split(object.Key, "/")
+		if len(parts) != 3 || parts[0] != "documents" || parts[2] != "original.pdf" {
+			continue
+		}
+		exists, err := references.UploadReferenceExists(ctx, parts[1])
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if err := storage.Delete(ctx, object.Key); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

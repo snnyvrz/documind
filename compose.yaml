@@ -7,6 +7,7 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:?POSTGRES_DB is required}?sslmode=disable
       UPLOAD_DIRECTORY: /data
+      UPLOAD_ORPHAN_MIN_AGE: ${UPLOAD_ORPHAN_MIN_AGE:-1h}
       OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-minio:9000}
       OBJECT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-documind}
       OBJECT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-documind-secret}

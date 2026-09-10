@@ -254,6 +254,63 @@ func TestPostgresAdmissionRecoveryReclaimsExpiredReservationsBeforeQuotaCheck(t 
 	}
 }
 
+func TestPostgresUploadMetadataAndQuotaCommitRollbackTogether(t *testing.T) {
+	store := integrationStore(t)
+	owner := "atomic-upload-owner-" + time.Now().UTC().Format("150405.000000000")
+	defer store.database.Exec("DELETE FROM upload_reservations WHERE owner_id = ?", owner)
+	defer store.database.Exec("DELETE FROM documents WHERE owner_id = ?", owner)
+	defer store.database.Exec("DELETE FROM db_owner_usages WHERE owner_id = ?", owner)
+
+	documentID := mustIntegrationID(t)
+	reservationID := mustIntegrationID(t)
+	now := time.Now().UTC()
+	if err := store.ReserveUpload(context.Background(), owner, reservationID, documentID, 17, now.Add(time.Hour)); err != nil {
+		t.Fatalf("reserve upload: %v", err)
+	}
+
+	metadata := document{ID: documentID, OriginalFilename: "atomic.pdf", StoredPath: "documents/" + documentID + "/original.pdf", MIMEType: "application/pdf", Size: 17, Status: "queued", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateOwnedAndCommitUpload(context.Background(), owner, metadata, reservationID); err != nil {
+		t.Fatalf("commit upload: %v", err)
+	}
+
+	var reservation uploadReservation
+	if err := store.database.First(&reservation, "id = ?", reservationID).Error; err != nil {
+		t.Fatalf("load committed reservation: %v", err)
+	}
+	if reservation.State != "committed" {
+		t.Fatalf("reservation state = %q, want committed", reservation.State)
+	}
+	var usage dbOwnerUsage
+	if err := store.database.First(&usage, "owner_id = ?", owner).Error; err != nil {
+		t.Fatalf("load committed usage: %v", err)
+	}
+	if usage.CommittedBytes != 17 || usage.CommittedDocuments != 1 || usage.ReservedBytes != 0 || usage.ReservedDocuments != 0 {
+		t.Fatalf("committed usage = %+v", usage)
+	}
+
+	failedDocumentID := mustIntegrationID(t)
+	failedReservationID := mustIntegrationID(t)
+	if err := store.ReserveUpload(context.Background(), owner, failedReservationID, failedDocumentID, 23, now.Add(time.Hour)); err != nil {
+		t.Fatalf("reserve rollback upload: %v", err)
+	}
+	duplicate := document{ID: documentID, OriginalFilename: "duplicate.pdf", StoredPath: "duplicate", MIMEType: "application/pdf", Size: 23, Status: "queued", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateOwnedAndCommitUpload(context.Background(), owner, duplicate, failedReservationID); err == nil {
+		t.Fatal("duplicate document upload commit succeeded")
+	}
+	if err := store.database.First(&reservation, "id = ?", failedReservationID).Error; err != nil {
+		t.Fatalf("load rolled-back reservation: %v", err)
+	}
+	if reservation.State != "reserved" {
+		t.Fatalf("rolled-back reservation state = %q, want reserved", reservation.State)
+	}
+	if err := store.database.First(&usage, "owner_id = ?", owner).Error; err != nil {
+		t.Fatalf("reload rolled-back usage: %v", err)
+	}
+	if usage.CommittedBytes != 17 || usage.CommittedDocuments != 1 || usage.ReservedBytes != 23 || usage.ReservedDocuments != 1 {
+		t.Fatalf("rolled-back usage = %+v", usage)
+	}
+}
+
 func TestPostgresRateLimitIsSharedAcrossStoreInstances(t *testing.T) {
 	first := integrationStore(t)
 	second := integrationStore(t)

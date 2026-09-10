@@ -41,6 +41,15 @@ func main() {
 	if err != nil {
 		panic("configure document storage: " + err.Error())
 	}
+	if references, ok := store.(uploadReferenceStore); ok {
+		reconcileContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := reconcileOrphanedUploads(reconcileContext, storage, references); err != nil {
+			// Object cleanup is deliberately independent from database admission.
+			// A temporary storage/listing failure must not prevent API startup.
+			println("reconcile orphaned uploads: " + err.Error())
+		}
+		cancel()
+	}
 	workerConfig, err := loadWorkerConfig()
 	if err != nil {
 		panic("configure document worker: " + err.Error())

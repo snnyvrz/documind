@@ -59,6 +59,14 @@ type quotaStore interface {
 	DeleteOwnedWithUsage(context.Context, string, string) (*document, error)
 }
 
+type atomicUploadStore interface {
+	CreateOwnedAndCommitUpload(context.Context, string, document, string) error
+}
+
+type uploadReferenceStore interface {
+	UploadReferenceExists(context.Context, string) (bool, error)
+}
+
 type queueStatsStore interface {
 	QueueStats(context.Context) (uint64, time.Time, error)
 }
@@ -274,6 +282,33 @@ func (s *postgresDocumentStore) CreateOwned(ctx context.Context, ownerID string,
 	return s.Create(ctx, document)
 }
 
+func (s *postgresDocumentStore) CreateOwnedAndCommitUpload(ctx context.Context, ownerID string, document document, reservationID string) error {
+	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var reservation uploadReservation
+		if err := tx.Where("id = ?", reservationID).First(&reservation).Error; err != nil {
+			return err
+		}
+		if reservation.State != "reserved" || reservation.OwnerID != ownerID || reservation.DocumentID != document.ID {
+			return errors.New("upload reservation is not available")
+		}
+		document.OwnerID = ownerID
+		if err := tx.Create(&document).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&dbOwnerUsage{}).Where("owner_id = ?", ownerID).Updates(map[string]any{
+			"reserved_bytes":      gorm.Expr("reserved_bytes - ?", reservation.Bytes),
+			"reserved_documents":  gorm.Expr("reserved_documents - 1"),
+			"committed_bytes":     gorm.Expr("committed_bytes + ?", reservation.Bytes),
+			"committed_documents": gorm.Expr("committed_documents + 1"),
+			"updated_at":          time.Now().UTC(),
+		}).Error; err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		return tx.Model(&reservation).Updates(map[string]any{"state": "committed", "committed_at": now}).Error
+	})
+}
+
 func (s *postgresDocumentStore) List(ctx context.Context) ([]document, error) {
 	var result []document
 	err := s.database.WithContext(ctx).Order("created_at DESC").Find(&result).Error
@@ -316,6 +351,19 @@ func (s *postgresDocumentStore) ReserveUpload(ctx context.Context, ownerID, rese
 		}
 		return tx.Create(&uploadReservation{ID: reservationID, OwnerID: ownerID, DocumentID: documentID, Bytes: size, State: "reserved", ExpiresAt: expiresAt, CreatedAt: time.Now().UTC()}).Error
 	})
+}
+
+func (s *postgresDocumentStore) UploadReferenceExists(ctx context.Context, documentID string) (bool, error) {
+	var exists bool
+	err := s.database.WithContext(ctx).Raw(`SELECT EXISTS (
+SELECT 1 FROM documents WHERE id = ?
+UNION ALL
+SELECT 1 FROM upload_reservations WHERE document_id = ? AND state = 'reserved'
+)`, documentID, documentID).Scan(&exists).Error
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func (s *postgresDocumentStore) CommitUpload(ctx context.Context, reservationID string) error {
