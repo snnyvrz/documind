@@ -19,11 +19,17 @@ import (
 
 func main() {
 	_ = godotenv.Load()
+	if migrateCommand() {
+		return
+	}
 	if err := validateProductionAuthConfig(); err != nil {
 		panic(err)
 	}
 	if embeddingDimensions() != maxEmbeddingDimensions {
 		panic("EMBEDDING_DIMENSIONS must be 768 because the database uses vector(768)")
+	}
+	if err := runMigrations(os.Getenv("DATABASE_URL")); err != nil {
+		panic("migrate document database: " + err.Error())
 	}
 
 	uploadDirectory, err := uploadDirectory()
@@ -56,6 +62,7 @@ func main() {
 	}
 
 	metrics := newMetrics()
+	postgresStore.metrics = metrics
 	e := newServerWithMetrics(uploadDirectory, store, storage, metrics)
 	rootContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -171,6 +178,7 @@ func newServerWithMetrics(uploadDirectory string, store documentStore, storage d
 	documents.GET("/:id", handler.Get)
 	documents.GET("/:id/chunks", handler.Chunks)
 	documents.GET("/:id/file", handler.File)
+	documents.HEAD("/:id/file", handler.File)
 	documents.DELETE("/:id", handler.Delete)
 	documents.POST("/:id/retry", handler.Retry)
 	documents.GET("/:id/questions", handler.Questions)

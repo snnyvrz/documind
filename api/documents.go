@@ -5,11 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -266,23 +268,95 @@ func (h *documentHandler) File(c *echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
 	}
-	file, err := h.storage.Get(c.Request().Context(), document.StoredPath)
+	info, err := h.storage.Stat(c.Request().Context(), document.StoredPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, errStorageNotFound) || os.IsNotExist(err) {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "document file not found"})
 		}
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not open document file"})
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not stat document file"})
 	}
-	defer file.Close()
+	return serveStoredFile(c, h.storage, document, info)
+}
 
-	c.Response().Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", filepath.Base(document.OriginalFilename)))
-	c.Response().Header().Set("Content-Type", document.MIMEType)
-	content, readErr := io.ReadAll(file)
-	if readErr != nil {
+var singleRangePattern = regexp.MustCompile(`^bytes=(\d*)-(\d*)$`)
+
+func serveStoredFile(c *echo.Context, storage documentStorage, document *document, info storageInfo) error {
+	response := c.Response()
+	request := c.Request()
+	header := response.Header()
+	header.Set("Accept-Ranges", "bytes")
+	header.Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", filepath.Base(document.OriginalFilename)))
+	header.Set("Content-Type", document.MIMEType)
+	if !info.LastModified.IsZero() {
+		header.Set("Last-Modified", info.LastModified.UTC().Format(http.TimeFormat))
+	}
+	if request.Header.Get("If-Modified-Since") != "" && !info.LastModified.UTC().Truncate(time.Second).After(parseHTTPTime(request.Header.Get("If-Modified-Since"))) {
+		return c.NoContent(http.StatusNotModified)
+	}
+
+	start, end := int64(0), info.Size-1
+	status := http.StatusOK
+	rangeHeader := request.Header.Get("Range")
+	if rangeHeader != "" && request.Header.Get("If-Range") != "" && request.Header.Get("If-Range") != info.LastModified.UTC().Format(http.TimeFormat) {
+		rangeHeader = ""
+	}
+	if rangeHeader != "" {
+		match := singleRangePattern.FindStringSubmatch(rangeHeader)
+		if match == nil || strings.Contains(rangeHeader, ",") {
+			header.Set("Content-Range", fmt.Sprintf("bytes */%d", info.Size))
+			return c.NoContent(http.StatusRequestedRangeNotSatisfiable)
+		}
+		var parseErr error
+		if match[1] == "" {
+			suffix, err := strconv.ParseInt(match[2], 10, 64)
+			if err != nil || suffix <= 0 {
+				parseErr = errors.New("invalid suffix range")
+			} else {
+				start = info.Size - suffix
+				if start < 0 {
+					start = 0
+				}
+			}
+		} else {
+			start, parseErr = strconv.ParseInt(match[1], 10, 64)
+			if match[2] == "" {
+				end = info.Size - 1
+			} else {
+				end, parseErr = strconv.ParseInt(match[2], 10, 64)
+			}
+		}
+		if parseErr != nil || start < 0 || start >= info.Size || end < start {
+			header.Set("Content-Range", fmt.Sprintf("bytes */%d", info.Size))
+			return c.NoContent(http.StatusRequestedRangeNotSatisfiable)
+		}
+		if end >= info.Size {
+			end = info.Size - 1
+		}
+		status = http.StatusPartialContent
+		header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, info.Size))
+	}
+	length := end - start + 1
+	header.Set("Content-Length", strconv.FormatInt(length, 10))
+	if request.Method == http.MethodHead || length == 0 {
+		response.WriteHeader(status)
+		return nil
+	}
+	file, err := storage.GetRange(request.Context(), document.StoredPath, start, end)
+	if err != nil {
+		if errors.Is(err, errStorageNotFound) {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "document file not found"})
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not read document file"})
 	}
-	http.ServeContent(c.Response(), c.Request(), document.OriginalFilename, document.UpdatedAt, strings.NewReader(string(content)))
-	return nil
+	defer file.Close()
+	response.WriteHeader(status)
+	_, err = io.CopyN(response, file, length)
+	return err
+}
+
+func parseHTTPTime(value string) time.Time {
+	parsed, _ := http.ParseTime(value)
+	return parsed
 }
 
 func (h *documentHandler) Delete(c *echo.Context) error {

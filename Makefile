@@ -4,7 +4,7 @@ COMPOSE ?= docker compose
 E2E_BASE_URL ?= http://127.0.0.1:8080
 KEEP_STACK ?= 0
 
-.PHONY: help install test test-api test-processor test-frontend test-e2e test-e2e-production test-e2e-production-headed stack-up stack-down rag-eval
+.PHONY: help install test test-api test-processor test-frontend test-e2e test-e2e-production test-e2e-production-headed stack-up stack-down rag-eval migrate
 
 help:
 	@printf '%s\n' \
@@ -23,6 +23,9 @@ test: test-api test-processor test-frontend test-e2e
 
 test-api:
 	cd api && go test ./...
+
+migrate:
+	cd api && go run . migrate
 
 test-processor:
 	cd document-processor && uv run python -m pytest

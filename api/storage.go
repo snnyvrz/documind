@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,8 +17,17 @@ import (
 type documentStorage interface {
 	Put(context.Context, string, io.Reader, int64, string) error
 	Get(context.Context, string) (io.ReadCloser, error)
+	Stat(context.Context, string) (storageInfo, error)
+	GetRange(context.Context, string, int64, int64) (io.ReadCloser, error)
 	Delete(context.Context, string) error
 	List(context.Context, string) ([]storageObject, error)
+}
+
+var errStorageNotFound = errors.New("storage object not found")
+
+type storageInfo struct {
+	Size         int64
+	LastModified time.Time
 }
 
 type storageObject struct {
@@ -58,8 +68,42 @@ func (s *filesystemStorage) Put(_ context.Context, key string, source io.Reader,
 }
 
 func (s *filesystemStorage) Get(_ context.Context, key string) (io.ReadCloser, error) {
-	return os.Open(s.path(key))
+	file, err := os.Open(s.path(key))
+	if os.IsNotExist(err) {
+		return nil, errStorageNotFound
+	}
+	return file, err
 }
+
+func (s *filesystemStorage) Stat(_ context.Context, key string) (storageInfo, error) {
+	info, err := os.Stat(s.path(key))
+	if os.IsNotExist(err) {
+		return storageInfo{}, errStorageNotFound
+	}
+	if err != nil {
+		return storageInfo{}, err
+	}
+	return storageInfo{Size: info.Size(), LastModified: info.ModTime()}, nil
+}
+
+func (s *filesystemStorage) GetRange(ctx context.Context, key string, start, end int64) (io.ReadCloser, error) {
+	file, err := s.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := file.(*os.File).Seek(start, io.SeekStart); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return &limitedReadCloser{Reader: io.LimitReader(file, end-start+1), closer: file}, nil
+}
+
+type limitedReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (r *limitedReadCloser) Close() error { return r.closer.Close() }
 
 func (s *filesystemStorage) Delete(_ context.Context, key string) error {
 	err := os.RemoveAll(filepath.Dir(s.path(key)))
@@ -134,6 +178,33 @@ func (s *objectStorage) Put(ctx context.Context, key string, source io.Reader, s
 
 func (s *objectStorage) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	return s.client.GetObject(ctx, s.bucket, strings.TrimPrefix(key, "/"), minio.GetObjectOptions{})
+}
+
+func (s *objectStorage) Stat(ctx context.Context, key string) (storageInfo, error) {
+	info, err := s.client.StatObject(ctx, s.bucket, strings.TrimPrefix(key, "/"), minio.StatObjectOptions{})
+	if err != nil {
+		return storageInfo{}, normalizeStorageError(err)
+	}
+	return storageInfo{Size: info.Size, LastModified: info.LastModified}, nil
+}
+
+func (s *objectStorage) GetRange(ctx context.Context, key string, start, end int64) (io.ReadCloser, error) {
+	options := minio.GetObjectOptions{}
+	if err := options.SetRange(start, end); err != nil {
+		return nil, fmt.Errorf("set object range: %w", err)
+	}
+	object, err := s.client.GetObject(ctx, s.bucket, strings.TrimPrefix(key, "/"), options)
+	if err != nil {
+		return nil, normalizeStorageError(err)
+	}
+	return object, nil
+}
+
+func normalizeStorageError(err error) error {
+	if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+		return errStorageNotFound
+	}
+	return err
 }
 
 func (s *objectStorage) Delete(ctx context.Context, key string) error {

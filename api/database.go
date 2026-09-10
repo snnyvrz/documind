@@ -159,6 +159,7 @@ type rateLimitBucket struct {
 type postgresDocumentStore struct {
 	database *gorm.DB
 	close    func() error
+	metrics  *metrics
 }
 
 func (s *postgresDocumentStore) Ping(ctx context.Context) error {
@@ -201,42 +202,6 @@ func (s *postgresDocumentStore) Close() error {
 }
 
 func (s *postgresDocumentStore) initialize() error {
-	if err := s.database.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
-		return err
-	}
-	if s.database.Migrator().HasTable(&document{}) {
-		if !s.database.Migrator().HasColumn(&document{}, "OwnerID") {
-			if err := s.database.Exec("ALTER TABLE documents ADD COLUMN owner_id text").Error; err != nil {
-				return err
-			}
-		}
-		var missing int64
-		if err := s.database.Model(&document{}).Where("owner_id IS NULL OR owner_id = ''").Count(&missing).Error; err != nil {
-			return err
-		}
-		if missing > 0 {
-			owner := getenv("LEGACY_DOCUMENT_OWNER", "")
-			if owner == "" {
-				return errors.New("legacy documents require LEGACY_DOCUMENT_OWNER before authentication can start")
-			}
-			if err := s.database.Model(&document{}).Where("owner_id IS NULL OR owner_id = ''").Update("owner_id", owner).Error; err != nil {
-				return err
-			}
-		}
-		if err := s.database.Exec("ALTER TABLE documents ALTER COLUMN owner_id SET NOT NULL").Error; err != nil {
-			return err
-		}
-	}
-	if err := s.database.AutoMigrate(&document{}, &documentChunk{}, &documentQuestion{}, &authUser{}, &dbOwnerUsage{}, &uploadReservation{}, &answerReservation{}, &rateLimitBucket{}); err != nil {
-		return err
-	}
-	if err := s.database.Exec(`CREATE INDEX IF NOT EXISTS idx_documents_queued_jobs
-ON documents (next_attempt_at, created_at, id) WHERE status = 'queued'`).Error; err != nil {
-		return err
-	}
-	if err := s.database.Exec(`CREATE INDEX IF NOT EXISTS idx_documents_owner_created_id ON documents (owner_id, created_at DESC, id DESC)`).Error; err != nil {
-		return err
-	}
 	if err := s.database.Exec(`INSERT INTO db_owner_usages (owner_id, committed_bytes, committed_documents, updated_at)
 SELECT owner_id, COALESCE(SUM(size), 0), COUNT(*), NOW() FROM documents GROUP BY owner_id
 ON CONFLICT (owner_id) DO NOTHING`).Error; err != nil {
@@ -245,8 +210,7 @@ ON CONFLICT (owner_id) DO NOTHING`).Error; err != nil {
 	if err := s.RecoverExpiredReservations(context.Background()); err != nil {
 		return err
 	}
-	return s.database.Exec(`CREATE INDEX IF NOT EXISTS idx_documents_expired_leases
-ON documents (lease_expires_at, created_at, id) WHERE status = 'processing'`).Error
+	return nil
 }
 
 func environmentIntDefault(name string, fallback int) int {
@@ -772,17 +736,25 @@ func (s *postgresDocumentStore) ListChunksOwned(ctx context.Context, ownerID, do
 }
 
 func (s *postgresDocumentStore) SearchChunks(ctx context.Context, documentID, embedding string, limit int) ([]documentChunk, error) {
+	started := time.Now()
 	var chunks []documentChunk
 	err := s.database.WithContext(ctx).Raw(`SELECT id, document_id, chunk_index, text, start_offset, end_offset, page_start, page_end, created_at
 FROM document_chunks WHERE document_id = ? ORDER BY embedding <=> ?::vector LIMIT ?`, documentID, embedding, limit).Scan(&chunks).Error
+	if s.metrics != nil {
+		s.metrics.recordRetrieval(started, err != nil)
+	}
 	return chunks, err
 }
 
 func (s *postgresDocumentStore) SearchChunksOwned(ctx context.Context, ownerID, documentID, embedding string, limit int) ([]documentChunk, error) {
+	started := time.Now()
 	var chunks []documentChunk
 	err := s.database.WithContext(ctx).Raw(`SELECT c.id, c.document_id, c.chunk_index, c.text, c.start_offset, c.end_offset, c.page_start, c.page_end, c.created_at
 FROM document_chunks c JOIN documents d ON d.id = c.document_id
 WHERE c.document_id = ? AND d.owner_id = ? ORDER BY c.embedding <=> ?::vector LIMIT ?`, documentID, ownerID, embedding, limit).Scan(&chunks).Error
+	if s.metrics != nil {
+		s.metrics.recordRetrieval(started, err != nil)
+	}
 	return chunks, err
 }
 

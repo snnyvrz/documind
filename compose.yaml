@@ -1,4 +1,15 @@
 services:
+  migrate:
+    build:
+      context: ./api
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:?POSTGRES_DB is required}?sslmode=disable
+      LEGACY_DOCUMENT_OWNER: ${LEGACY_DOCUMENT_OWNER:?LEGACY_DOCUMENT_OWNER is required}
+    entrypoint: ["/usr/local/bin/documind-api"]
+    command: ["migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
   api:
     build:
       context: ./api
@@ -40,6 +51,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       document-processor:
         condition: service_healthy
       minio:

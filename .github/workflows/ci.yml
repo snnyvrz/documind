@@ -35,7 +35,7 @@ jobs:
         working-directory: api
         env:
           DATABASE_URL: postgres://documind:documind@127.0.0.1:5432/documind?sslmode=disable
-        run: go test -tags=integration ./...
+        run: go run . migrate && go test -tags=integration ./...
 
   python:
     name: Python tests

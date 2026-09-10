@@ -30,8 +30,7 @@ export function PdfPreview({ documentId, filename, pageCount = 1, initialPage, o
         </div>
         <div className="min-h-0 flex-1 bg-muted/40 p-2 sm:p-4">
           <iframe
-            key={page}
-            title={`${filename}, page ${page}`}
+             title={`${filename}, page ${page}`}
             src={`/documents/${documentId}/file#page=${page}`}
             className="size-full rounded-xl border bg-white"
           />

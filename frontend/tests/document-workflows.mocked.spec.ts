@@ -107,8 +107,12 @@ test.describe("mocked API document workflows", () => {
     await page.getByRole("button", { name: "Open in PDF" }).click();
     await expect(page.getByRole("dialog", { name: "Preview sample-document.pdf" })).toBeVisible();
     await expect(page.getByRole("spinbutton", { name: "PDF page number" })).toHaveValue("1");
+    const iframeBefore = await page.locator("iframe").elementHandle();
     await page.getByRole("button", { name: "Next PDF page" }).click();
     await expect(page.getByRole("spinbutton", { name: "PDF page number" })).toHaveValue("2");
+    const iframeAfter = await page.locator("iframe").elementHandle();
+    expect(await iframeBefore?.evaluate((node, current) => node === current, iframeAfter)).toBe(true);
+    await expect(page.locator("iframe")).toHaveAttribute("src", "/documents/mock-document-id/file#page=2");
   });
 
   test("resets selected history and preview when switching completed documents", async ({ page }) => {

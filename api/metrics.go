@@ -18,8 +18,19 @@ type metrics struct {
 	answerLatencyMs      atomic.Uint64
 	answerLatencyN       atomic.Uint64
 	answerLatencyBuckets [8]atomic.Uint64
+	retrievalLatencyMs   atomic.Uint64
+	retrievalLatencyN    atomic.Uint64
+	retrievalFailures    atomic.Uint64
 	queueDepth           atomic.Uint64
 	queueOldestAgeMs     atomic.Uint64
+}
+
+func (m *metrics) recordRetrieval(start time.Time, failed bool) {
+	m.retrievalLatencyMs.Add(uint64(time.Since(start).Milliseconds()))
+	m.retrievalLatencyN.Add(1)
+	if failed {
+		m.retrievalFailures.Add(1)
+	}
 }
 
 func newMetrics() *metrics { return &metrics{} }
@@ -41,7 +52,7 @@ func (m *metrics) recordAnswer(start time.Time, failed bool) {
 
 func (m *metrics) handler(c *echo.Context) error {
 	c.Response().Header().Set("Content-Type", "text/plain; version=0.0.4")
-	_, err := fmt.Fprintf(c.Response(), "# TYPE documind_uploads_total counter\ndocumind_uploads_total %d\n# TYPE documind_upload_rejections_total counter\ndocumind_upload_rejections_total %d\n# TYPE documind_processing_failures_total counter\ndocumind_processing_failures_total %d\n# TYPE documind_answers_total counter\ndocumind_answers_total %d\n# TYPE documind_answer_failures_total counter\ndocumind_answer_failures_total %d\n# TYPE documind_answer_latency_seconds histogram\ndocumind_answer_latency_seconds_sum %g\ndocumind_answer_latency_seconds_count %d\n", m.uploads.Load(), m.uploadRejections.Load(), m.processingFailures.Load(), m.answers.Load(), m.answerFailures.Load(), float64(m.answerLatencyMs.Load())/1000, m.answerLatencyN.Load())
+	_, err := fmt.Fprintf(c.Response(), "# TYPE documind_uploads_total counter\ndocumind_uploads_total %d\n# TYPE documind_upload_rejections_total counter\ndocumind_upload_rejections_total %d\n# TYPE documind_processing_failures_total counter\ndocumind_processing_failures_total %d\n# TYPE documind_answers_total counter\ndocumind_answers_total %d\n# TYPE documind_answer_failures_total counter\ndocumind_answer_failures_total %d\n# TYPE documind_answer_latency_seconds histogram\ndocumind_answer_latency_seconds_sum %g\ndocumind_answer_latency_seconds_count %d\n# TYPE documind_retrieval_latency_seconds summary\ndocumind_retrieval_latency_seconds_sum %g\ndocumind_retrieval_latency_seconds_count %d\ndocumind_retrieval_failures_total %d\n", m.uploads.Load(), m.uploadRejections.Load(), m.processingFailures.Load(), m.answers.Load(), m.answerFailures.Load(), float64(m.answerLatencyMs.Load())/1000, m.answerLatencyN.Load(), float64(m.retrievalLatencyMs.Load())/1000, m.retrievalLatencyN.Load(), m.retrievalFailures.Load())
 	if err == nil {
 		for index, boundary := range []float64{1, 5, 10, 30, 60, 120, 300, 600} {
 			_, err = fmt.Fprintf(c.Response(), "documind_answer_latency_seconds_bucket{le=\"%g\"} %d\n", boundary, m.answerLatencyBuckets[index].Load())
