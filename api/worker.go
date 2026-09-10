@@ -116,7 +116,11 @@ func environmentDuration(name string, fallback time.Duration) (time.Duration, er
 	return result, nil
 }
 
-func startWorker(ctx context.Context, storage documentStorage, store documentStore, config workerConfig) <-chan struct{} {
+func startWorker(ctx context.Context, storage documentStorage, store documentStore, config workerConfig, metricCollectors ...*metrics) <-chan struct{} {
+	var metricCollector *metrics
+	if len(metricCollectors) > 0 {
+		metricCollector = metricCollectors[0]
+	}
 	done := make(chan struct{})
 	var wait sync.WaitGroup
 	wait.Add(config.workers)
@@ -129,7 +133,7 @@ func startWorker(ctx context.Context, storage documentStorage, store documentSto
 					return
 				default:
 				}
-				err := processNext(ctx, storage, store, config)
+				err := processNext(ctx, storage, store, config, metricCollector)
 				if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 					log.Printf("document worker: %v", err)
 				}
@@ -147,7 +151,15 @@ func startWorker(ctx context.Context, storage documentStorage, store documentSto
 	return done
 }
 
-func processNext(ctx context.Context, storageInput any, store documentStore, config workerConfig) error {
+func processNext(ctx context.Context, storageInput any, store documentStore, config workerConfig, metricCollectors ...*metrics) error {
+	var metricCollector *metrics
+	if len(metricCollectors) > 0 {
+		metricCollector = metricCollectors[0]
+	}
+	if metricCollector != nil {
+		refreshQueueMetrics(ctx, store, metricCollector)
+		defer refreshQueueMetrics(context.Background(), store, metricCollector)
+	}
 	storage := asDocumentStorage(storageInput)
 	leaseToken, err := documentID()
 	if err != nil {
@@ -176,9 +188,33 @@ func processNext(ctx context.Context, storageInput any, store documentStore, con
 	}
 	log.Printf("document worker: document %s attempt %d: %v", claimed.ID, claimed.AttemptCount, processingErr)
 	if processingErr.permanent || claimed.AttemptCount >= config.maxAttempts {
+		if metricCollector != nil {
+			metricCollector.processingFailures.Add(1)
+		}
 		return store.Fail(ctx, claimed.ID, leaseToken, processingErr.message)
 	}
 	return store.Retry(ctx, claimed.ID, leaseToken, time.Now().UTC().Add(retryBackoff(claimed.AttemptCount, config)))
+}
+
+func refreshQueueMetrics(ctx context.Context, store documentStore, collector *metrics) {
+	queue, ok := store.(queueStatsStore)
+	if !ok {
+		return
+	}
+	depth, oldest, err := queue.QueueStats(ctx)
+	if err != nil {
+		return
+	}
+	collector.queueDepth.Store(depth)
+	if oldest.IsZero() {
+		collector.queueOldestAgeMs.Store(0)
+		return
+	}
+	age := time.Since(oldest).Milliseconds()
+	if age < 0 {
+		age = 0
+	}
+	collector.queueOldestAgeMs.Store(uint64(age))
 }
 
 func asDocumentStorage(value any) documentStorage {

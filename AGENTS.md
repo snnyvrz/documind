@@ -1,6 +1,6 @@
 # AGENTS.md
 
-DocuMind: a PDF-document upload and embedding service. The repo contains independent Go, Python, and React apps wired together by `compose.yaml`. CI runs Go unit and PostgreSQL integration tests, Python tests, and frontend build/lint checks. The frontend also has Playwright workflow tests.
+DocuMind: a PDF-document upload and embedding service. The repo contains independent Go, Python, and React apps wired together by `compose.yaml`. CI runs Go unit and PostgreSQL integration tests, Python tests, frontend build/lint checks, and mocked Playwright workflow tests. The `Makefile` production-like target exercises the full Compose stack with Playwright.
 
 ## Layout
 
@@ -30,7 +30,7 @@ Frontend (from `frontend/`):
 - `bun run build` — `tsc -b && vite build`.
 - `bun run lint` — ESLint.
 - `bun run test:e2e` — deterministic mocked Playwright workflows; no backend or processor required.
-- `bun run test:e2e:production` — full-stack Playwright workflow through Compose; requires Docker, PostgreSQL, the processor, Ollama, and configured models.
+- `bun run test:e2e:production` — full-stack Playwright workflow; requires Docker, PostgreSQL, the processor, Ollama, and configured models. The repository Make target runs Compose with development auth and plain-HTTP-compatible cookies, then registers a temporary account through the UI.
 
 Full stack: `docker compose up --build`.
 Stop the stack: `docker compose down`.
@@ -40,7 +40,7 @@ CI-equivalent checks:
 - API integration tests: set `DATABASE_URL` and run `cd api && go test -tags=integration ./...`.
 - Processor tests: `cd document-processor && uv sync --locked && uv run python -m pytest`.
 - Frontend checks: `cd frontend && bun install --frozen-lockfile && bun run build && bun run lint`.
-- Mocked frontend workflow: `cd frontend && bun run test:e2e`.
+- Mocked frontend workflow: `cd frontend && bunx playwright install --with-deps chromium && bun run test:e2e`.
 
 ## API local setup
 
@@ -58,4 +58,6 @@ CI-equivalent checks:
 - Question submission needs an in-flight guard. Enter and button actions must not start a second answer stream while one is active.
 - `GET /documents/:id/chunks` exposes stored chunk metadata for API consumers, but the current frontend does not fetch or render those chunks.
 - Deleting a document removes its database chunks and uploaded `documents/<id>/` directory.
+- The RAG evaluator requires login or registration credentials, preserves the authentication cookie, rejects failed document processing, and requires a successful SSE `done` event with `ok: true`.
+- API metrics are shared by the HTTP handler and worker. They count accepted/rejected uploads, terminal processing failures, and answer outcomes; answer latency is a Prometheus histogram; queue depth and oldest queued age are refreshed from database state.
 - `data/`, `api/.env`, and `api/tmp/` are gitignored working-state (uploads, local env, air build artifacts).

@@ -261,9 +261,12 @@ Run the production-like browser workflow against the full Docker Compose stack:
 make test-e2e-production
 ```
 
-This starts the stack, waits for the frontend on port `8080`, uploads a real PDF,
-waits for document processing, and asks a question through the real API. It
-requires Docker Compose and healthy Ollama models, and may take several minutes.
+This starts the stack, waits for the frontend on port `8080`, registers a
+temporary account, uploads a real PDF, waits for document processing, and asks a
+question through the real authenticated API. The Make target runs the stack with
+development authentication, HTTP-compatible cookies, and HTTPS enforcement
+disabled because the local test endpoint is plain HTTP. It requires Docker
+Compose and healthy Ollama models, and may take several minutes.
 The stack is stopped when the test finishes. Keep it running for debugging with:
 
 ```sh
@@ -410,9 +413,12 @@ Authentication requests are limited by source IP and normalized account, use an
 longer than 72 bytes. These rate limits are process-local and must be replaced
 with shared rate-limit storage when running multiple API replicas.
 
-For local Compose development, `AUTH_MODE=development` uses the fixed local
-principal only for in-memory unit tests. The Compose API uses the configured JWT
-secret and supports account registration.
+For local API development, `AUTH_MODE=development` allows requests to use the
+fixed local principal when no JWT secret is configured. The local Compose E2E
+Make target instead enables development authentication with the configured JWT
+secret, disables Secure cookies and HTTPS enforcement for its plain HTTP test
+endpoint, and registers a temporary account through the real UI. These settings
+are for local testing only and must not be used for shared deployments.
 
 When upgrading a database created before ownership was enabled, set
 `LEGACY_DOCUMENT_OWNER` to an explicitly chosen operator subject. The startup
@@ -426,7 +432,19 @@ answers, answerability, and supporting page passages independently of chunk
 indexes. The live runner in `scripts/run_rag_eval.py` exercises the public
 upload, processing, and SSE question APIs and writes raw JSON results. Run it
 against a local stack as documented in `evals/README.md`. Live model evaluation
-is intentionally separate from deterministic CI.
+is intentionally separate from deterministic CI. The runner requires an
+authenticated account and preserves the session cookie across upload, polling,
+and question requests:
+
+```sh
+DOCUMIND_EVAL_EMAIL=eval@example.com \
+DOCUMIND_EVAL_PASSWORD='password-at-least-8-chars' \
+make rag-eval
+```
+
+Use `--register` with `scripts/run_rag_eval.py` when creating a new evaluation
+account. The runner fails when a document fails processing, an SSE `error` event
+is received, or the stream does not finish with `event: done` and `{"ok": true}`.
 
 ## Configuration
 
@@ -460,6 +478,12 @@ The main API environment variables are:
 | `TOKEN_CHUNK_OVERLAP` | Chunk overlap in whitespace-token units | `80` |
 | `EMBEDDING_BATCH_SIZE` | Chunks embedded per streamed batch | `32` |
 | `RETRIEVAL_LIMIT` | Number of nearest chunks supplied to answer generation | `5` |
+
+The `/metrics` endpoint exposes Prometheus text metrics for accepted and rejected
+uploads, terminal document-processing failures, answer successes and failures,
+answer-latency histogram buckets/sum/count, current queued-job depth, and the
+oldest eligible queued-job age. Queue gauges are refreshed from database state;
+transient processing retries are not counted as terminal processing failures.
 
 The API and nginx both enforce the 20 MiB upload limit. Keep these values in
 sync if the limit changes.

@@ -46,10 +46,11 @@ func main() {
 		panic("configure document worker: " + err.Error())
 	}
 
-	e := newServer(uploadDirectory, store, storage)
+	metrics := newMetrics()
+	e := newServerWithMetrics(uploadDirectory, store, storage, metrics)
 	rootContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	workerDone := startWorker(rootContext, storage, store, workerConfig)
+	workerDone := startWorker(rootContext, storage, store, workerConfig, metrics)
 	startConfig := echo.StartConfig{Address: ":1323", GracefulTimeout: 30 * time.Second}
 	if err := startConfig.Start(rootContext, e); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		e.Logger.Error("failed to start server", "error", err)
@@ -106,6 +107,17 @@ func configuredDocumentStorage(ctx context.Context, directory string) (documentS
 }
 
 func newServer(uploadDirectory string, store documentStore, storages ...documentStorage) *echo.Echo {
+	return newServerWithMetrics(uploadDirectory, store, firstStorage(storages), newMetrics())
+}
+
+func firstStorage(storages []documentStorage) documentStorage {
+	if len(storages) > 0 {
+		return storages[0]
+	}
+	return nil
+}
+
+func newServerWithMetrics(uploadDirectory string, store documentStore, storage documentStorage, metrics *metrics) *echo.Echo {
 	e := echo.New()
 
 	e.Use(middleware.RequestLogger())
@@ -129,11 +141,10 @@ func newServer(uploadDirectory string, store documentStore, storages ...document
 		return c.JSON(http.StatusOK, map[string]string{"status": "ready"})
 	})
 
-	var storage documentStorage = newFilesystemStorage(uploadDirectory)
-	if len(storages) > 0 {
-		storage = storages[0]
+	if storage == nil {
+		storage = newFilesystemStorage(uploadDirectory)
 	}
-	handler := newDocumentHandler(uploadDirectory, store, storage)
+	handler := newDocumentHandlerWithMetrics(uploadDirectory, store, storage, metrics)
 	e.GET("/metrics", handler.metrics.handler)
 	var database *gorm.DB
 	if postgresStore, ok := store.(*postgresDocumentStore); ok {

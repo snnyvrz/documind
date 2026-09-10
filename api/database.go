@@ -59,6 +59,10 @@ type quotaStore interface {
 	DeleteOwnedWithUsage(context.Context, string, string) (*document, error)
 }
 
+type queueStatsStore interface {
+	QueueStats(context.Context) (uint64, time.Time, error)
+}
+
 var errLeaseLost = errors.New("document processing lease lost")
 
 type documentChunk struct {
@@ -506,6 +510,21 @@ RETURNING *`, maxAttempts, leaseToken, leaseDuration.Milliseconds()).Scan(&resul
 		return nil, gorm.ErrRecordNotFound
 	}
 	return &result, nil
+}
+
+func (s *postgresDocumentStore) QueueStats(ctx context.Context) (uint64, time.Time, error) {
+	var result struct {
+		Depth  uint64
+		Oldest *time.Time
+	}
+	err := s.database.WithContext(ctx).Raw(`SELECT COUNT(*) AS depth, MIN(created_at) AS oldest FROM documents WHERE status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())`).Scan(&result).Error
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	if result.Oldest == nil {
+		return result.Depth, time.Time{}, nil
+	}
+	return result.Depth, *result.Oldest, nil
 }
 
 func (s *postgresDocumentStore) RenewLease(ctx context.Context, id, leaseToken string, leaseDuration time.Duration) error {

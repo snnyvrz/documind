@@ -62,32 +62,40 @@ func newDocumentHandler(uploadDirectory string, store documentStore, storages ..
 	if len(storages) > 0 {
 		storage = storages[0]
 	}
-	return &documentHandler{uploadDirectory: uploadDirectory, store: store, storage: storage, admission: newAdmissionController(), metrics: newMetrics()}
+	return newDocumentHandlerWithMetrics(uploadDirectory, store, storage, newMetrics())
+}
+
+func newDocumentHandlerWithMetrics(uploadDirectory string, store documentStore, storage documentStorage, collector *metrics) *documentHandler {
+	return &documentHandler{uploadDirectory: uploadDirectory, store: store, storage: storage, admission: newAdmissionController(), metrics: collector}
 }
 
 func (h *documentHandler) Upload(c *echo.Context) error {
+	reject := func(status int, message string) error {
+		h.metrics.uploadRejections.Add(1)
+		return c.JSON(status, map[string]string{"error": message})
+	}
 	request := c.Request()
 	owner := principal(c)
 	if request.ContentLength > maxUploadSize {
-		return c.JSON(http.StatusRequestEntityTooLarge, map[string]string{"error": "uploaded file is too large"})
+		return reject(http.StatusRequestEntityTooLarge, "uploaded file is too large")
 	}
 	request.Body = http.MaxBytesReader(c.Response(), request.Body, maxUploadSize)
 
 	file, fileHeader, err := request.FormFile("file")
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "a PDF file is required"})
+		return reject(http.StatusBadRequest, "a PDF file is required")
 	}
 	defer file.Close()
 
 	prefix := make([]byte, 5)
 	if _, err := io.ReadFull(file, prefix); err != nil || string(prefix) != "%PDF-" {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "file must be a PDF document"})
+		return reject(http.StatusBadRequest, "file must be a PDF document")
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not process uploaded file"})
 	}
 	if fileHeader.Size > maxUploadSize {
-		return quotaResponse(c, "upload quota exceeded")
+		return reject(http.StatusTooManyRequests, "upload quota exceeded")
 	}
 	documentID, err := documentID()
 	if err != nil {
@@ -101,10 +109,10 @@ func (h *documentHandler) Upload(c *echo.Context) error {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not check upload quota"})
 		}
 		if !allowed || durableQuota.ReserveUpload(request.Context(), owner, reservationID, documentID, fileHeader.Size, time.Now().UTC().Add(30*time.Minute)) != nil {
-			return quotaResponse(c, "upload quota exceeded")
+			return reject(http.StatusTooManyRequests, "upload quota exceeded")
 		}
 	} else if !h.admission.reserveUpload(owner, fileHeader.Size) {
-		return quotaResponse(c, "upload quota exceeded")
+		return reject(http.StatusTooManyRequests, "upload quota exceeded")
 	}
 	reserved := true
 	defer func() {
@@ -143,6 +151,7 @@ func (h *documentHandler) Upload(c *echo.Context) error {
 		}
 	}
 	reserved = false
+	h.metrics.uploads.Add(1)
 
 	return c.JSON(http.StatusAccepted, map[string]string{"documentId": documentID, "status": document.Status})
 }
@@ -354,6 +363,9 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 		}
 		defer h.admission.endAnswer(owner)
 	}
+	answerStarted := time.Now()
+	answerFailed := true
+	defer func() { h.metrics.recordAnswer(answerStarted, answerFailed) }()
 	connection, err := grpc.NewClient(processorAddress(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "document processor unavailable"})
@@ -450,6 +462,7 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 	historyPayload, _ := json.Marshal(history)
 	writeSSE(response, flusher, canFlush, "history", historyPayload)
 	writeSSEDone(response, flusher, canFlush, true)
+	answerFailed = false
 	return nil
 }
 

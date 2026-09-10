@@ -42,24 +42,24 @@ stack-down:
 test-e2e-production:
 	@set -e; \
 	trap 'status=$$?; if [ "$(KEEP_STACK)" != "1" ]; then $(COMPOSE) down; fi; exit $$status' EXIT INT TERM; \
-	$(COMPOSE) up -d --build; \
+	AUTH_MODE=development AUTH_COOKIE_SECURE=false AUTH_REQUIRE_HTTPS=false $(COMPOSE) up -d --build; \
 	 i=0; while ! curl --fail --silent --show-error $(E2E_BASE_URL) >/dev/null; do \
 		 i=$$((i + 1)); \
 		 if [ $$i -ge 120 ]; then printf '%s\n' 'Timed out waiting for the frontend'; exit 1; fi; \
 		 sleep 2; \
 	done; \
-	cd frontend && E2E_BASE_URL=$(E2E_BASE_URL) bun run test:e2e:production
+	cd frontend && E2E_BASE_URL=$(E2E_BASE_URL) AUTH_MODE=development AUTH_COOKIE_SECURE=false AUTH_REQUIRE_HTTPS=false bun run test:e2e:production
 
 test-e2e-production-headed:
 	@set -e; \
 	trap 'status=$$?; if [ "$(KEEP_STACK)" != "1" ]; then $(COMPOSE) down; fi; exit $$status' EXIT INT TERM; \
-	$(COMPOSE) up -d --build; \
+	AUTH_MODE=development AUTH_COOKIE_SECURE=false AUTH_REQUIRE_HTTPS=false $(COMPOSE) up -d --build; \
 	 i=0; while ! curl --fail --silent --show-error $(E2E_BASE_URL) >/dev/null; do \
 		 i=$$((i + 1)); \
 		 if [ $$i -ge 120 ]; then printf '%s\n' 'Timed out waiting for the frontend'; exit 1; fi; \
 		 sleep 2; \
 	done; \
-	cd frontend && E2E_BASE_URL=$(E2E_BASE_URL) bun run test:e2e:production -- --headed
+	cd frontend && E2E_BASE_URL=$(E2E_BASE_URL) AUTH_MODE=development AUTH_COOKIE_SECURE=false AUTH_REQUIRE_HTTPS=false bun run test:e2e:production -- --headed
 
 rag-eval:
 	python scripts/run_rag_eval.py --base-url http://127.0.0.1:1323 --dataset evals/rag_questions.jsonl --documents evals/documents --output evals/results/local.json
