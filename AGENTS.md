@@ -6,7 +6,7 @@ DocuMind: a PDF-document upload and embedding service. The repo contains indepen
 
 - `api/` — Go 1.26 backend. Module name is `api` (not a host path). HTTP server on `:1323` using **labstack/echo v5** (note: context params are `*echo.Context`, not v4's value type), GORM + PostgreSQL, and a background worker that calls the processor over gRPC. Startup reclaims expired quota reservations and reconciles usage counters.
 - `document-processor/` — Python 3.14 `uv` project. FastAPI health server on `:8000`, gRPC processor on `:50051`, isolated resource-limited PDF extraction, paragraph/token-aware chunking, and Ollama embedding/chat integration. Scanned PDFs without extractable text are rejected because OCR is not enabled.
-- `frontend/` — React 19 + Vite 8 + Tailwind v4 + shadcn/ui. **Bun** is the package manager (`bun.lock` committed; never add a `package-lock.json`). Path alias `@/*` → `src/*`. React Compiler is enabled via `@rolldown/plugin-babel` + `reactCompilerPreset` in `vite.config.ts`. Document polling and answer SSE streaming live in cancellation-aware hooks; the current UI displays the generated answer without rendering extracted text, chunks, or source citations.
+- `frontend/` — React 19 + Vite 8 + Tailwind v4 + shadcn/ui. **Bun** is the package manager (`bun.lock` committed; never add a `package-lock.json`). Path alias `@/*` → `src/*`. React Compiler is enabled via `@rolldown/plugin-babel` + `reactCompilerPreset` in `vite.config.ts`. Document polling and answer SSE streaming live in cancellation-aware hooks; the UI displays the generated answer and retrieved source passages and can preview the referenced PDF page.
 - `proto/` — shared protobuf contract; generated bindings are committed under `api/proto/` and `document-processor/generated/`.
 - `compose.yaml` — full-stack run: PostgreSQL (`db`, port 5432), Ollama, MinIO object storage, `document-processor`, `api` (1323), and `frontend` under nginx (8080, proxies `/documents` → `api`). PostgreSQL, Ollama, and object storage use named volumes.
 
@@ -14,7 +14,7 @@ DocuMind: a PDF-document upload and embedding service. The repo contains indepen
 
 API (from `api/`):
 - Unit tests: `go test ./...` — runs standalone, using an in-memory `memoryDocumentStore` (no Postgres needed).
-- PostgreSQL integration tests: `DATABASE_URL=postgres://documind:documind@localhost:5432/documind?sslmode=disable go test -tags=integration ./...` — requires the Compose `db` service and the `pgvector/pgvector` image.
+- PostgreSQL integration tests: `DATABASE_URL=postgres://documind:documind@localhost:5432/documind?sslmode=disable go test -tags=integration ./...` — requires a host-reachable PostgreSQL instance using the `pgvector/pgvector` image or equivalent; the default Compose `db` service is internal-only.
 - Run locally: `go run .` — requires `api/.env`, PostgreSQL, and a document processor reachable through `DOCUMENT_PROCESSOR_GRPC_URL`.
 - Live reload: `air` (config in `.air.toml`, builds to `api/tmp/main`). Requires Postgres and env; see below.
 
@@ -44,7 +44,7 @@ CI-equivalent checks:
 
 ## API local setup
 
-- Copy `api/.env.example` → `api/.env` and start Postgres first: `docker compose up -d db`. `main.go` loads `.env` via godotenv; `DATABASE_URL` is required (panics if unset/unreachable) and `AutoMigrate` runs on startup. `UPLOAD_DIRECTORY` defaults to the repository `data/` directory with the example settings.
+- Copy `api/.env.example` → `api/.env` and provide a host-reachable PostgreSQL instance first. The default Compose `db` service is internal-only and is not reachable from a host process at `localhost:5432`. `main.go` loads `.env` via godotenv; `DATABASE_URL` is required (panics if unset/unreachable) and `AutoMigrate` runs on startup. `UPLOAD_DIRECTORY` defaults to the repository `data/` directory with the example settings.
 - Start the document processor locally, or set `DOCUMENT_PROCESSOR_GRPC_URL` to another processor instance before running the API. The processor also requires Ollama and the configured embedding/chat models for actual document processing.
 
 ## Gotchas
@@ -53,10 +53,10 @@ CI-equivalent checks:
 - shadcn/ui uses registry style `base-rhea` (`components.json`); shadcn components live in `src/components/ui/`.
 - API upload limit is 20 MB (`http.MaxBytesReader`) and PDFs are validated by `%PDF-` magic bytes — keep this in sync with nginx `client_max_body_size` (currently local to the container nginx config).
 - Document processing additionally limits pages, extracted text, chunks, and isolated extraction CPU/memory/time through `MAX_PDF_PAGES`, `MAX_EXTRACTED_TEXT_BYTES`, `MAX_CHUNKS`, `PDF_EXTRACTION_TIMEOUT`, `PDF_EXTRACTION_MEMORY_BYTES`, and `PDF_EXTRACTION_CPU_SECONDS`. Chunk offsets must preserve absolute token spans in the normalized extracted text; do not recover offsets with a repeated `find` from the paragraph start. Page ranges must be calculated from those same spans. Concurrency is bounded by `INGESTION_CAPACITY`, `QUESTION_CAPACITY`, and `EMBEDDING_CAPACITY`. Streaming RPC generators must release their semaphore in one outer `finally`, never from individual yield, cancellation, or error branches, so generator close cannot leak capacity. `EMBEDDING_DIMENSIONS` must stay `768` for the `vector(768)` database column.
-- Document routes are `POST /documents`, `GET /documents`, `GET /documents/:id`, `GET /documents/:id/chunks`, `DELETE /documents/:id`, and `POST /documents/:id/questions`.
+- Document routes are `POST /documents`, `GET /documents`, `GET /documents/:id`, `GET /documents/:id/chunks`, `GET|HEAD /documents/:id/file`, `DELETE /documents/:id`, `POST /documents/:id/retry`, `GET /documents/:id/questions`, and `POST /documents/:id/questions`.
 - Document selection is a cancellation boundary: switching or deleting a document must abort its status polling and answer stream and clear the current answer.
 - Question submission needs an in-flight guard. Enter and button actions must not start a second answer stream while one is active.
-- `GET /documents/:id/chunks` exposes stored chunk metadata for API consumers, but the current frontend does not fetch or render those chunks.
+- `GET /documents/:id/chunks` exposes stored chunk metadata for API consumers. Question responses also include retrieved source passages, which the frontend renders and links to the original PDF preview.
 - Deleting a document removes its database chunks and uploaded `documents/<id>/` directory.
 - The RAG evaluator requires login or registration credentials, preserves the authentication cookie, rejects failed document processing, and requires a successful SSE `done` event with `ok: true`.
 - API metrics are shared by the HTTP handler and worker. They count accepted/rejected uploads, terminal processing failures, and answer outcomes; answer latency is a Prometheus histogram; queue depth and oldest queued age are refreshed from database state.

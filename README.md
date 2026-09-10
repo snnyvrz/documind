@@ -47,8 +47,9 @@ PDF processing is asynchronous:
     and cancels polling when another document is selected.
 11. The frontend lists completed and in-progress documents, lets users reopen or
     delete previous documents, and asks questions about completed documents.
-12. Questions stream answers over SSE. The frontend displays only the generated
-    answer; switching documents or stopping an answer cancels the active stream,
+12. Questions stream answers over SSE. The frontend displays the generated answer
+    and retrieved source passages, and can open the corresponding PDF page in a
+    preview. Switching documents or stopping an answer cancels the active stream,
     and pressing Enter while a stream is active is ignored.
 
 The document processor handles PDFs with embedded text. Scanned PDFs require an
@@ -105,7 +106,7 @@ The services use these local ports:
 | --- | --- | --- |
 | Frontend | `http://localhost:8080` | Web application |
 | Go API | `http://localhost:1323` | HTTP API |
-| PostgreSQL | `localhost:5432` | Document metadata |
+| PostgreSQL | internal Compose network | Document metadata |
 | Extractor | internal only | HTTP health on `8000`, gRPC on `50051` |
 
 The document processor is not published to the host. The Go API reaches it
@@ -131,7 +132,7 @@ cd api
 go test ./...
 ```
 
-Run the PostgreSQL integration tests with the Compose database running:
+Run the PostgreSQL integration tests with PostgreSQL reachable at `localhost:5432`:
 
 ```sh
 DATABASE_URL=postgres://documind:documind@localhost:5432/documind?sslmode=disable \
@@ -139,12 +140,16 @@ DATABASE_URL=postgres://documind:documind@localhost:5432/documind?sslmode=disabl
 ```
 
 The integration tests use the `pgvector/pgvector` PostgreSQL image because the
-production schema requires the `vector` extension. They are skipped when
+production schema requires the `vector` extension. The default Compose database
+is not published to the host, so use a separately reachable PostgreSQL instance
+or a Compose override that publishes port `5432`. Tests are skipped when
 `DATABASE_URL` is unset.
 
 Run the API locally:
 
-1. Start PostgreSQL:
+1. Start or otherwise provide a PostgreSQL instance reachable from the host. The
+   default Compose `db` service is internal-only and is not reachable at
+   `localhost:5432`; use a separately published database or a Compose override:
 
    ```sh
    docker compose up -d db
@@ -355,8 +360,8 @@ GET /documents/{documentId}/chunks
 ```
 
 Returns the stored extracted-text chunks with their `chunkIndex`, text offsets,
-page ranges, and text. The current frontend does not fetch or render this data,
-but the endpoint remains available for API consumers.
+page ranges, and text. The endpoint remains available for API consumers; question
+responses separately include the passages retrieved for answer generation.
 
 ### Delete a document
 
@@ -367,6 +372,34 @@ DELETE /documents/{documentId}
 Deletes the document, its stored chunks, and its uploaded file directory. The
 endpoint returns `204 No Content` on success and `404 Not Found` when the document
 does not exist.
+
+### Download or preview the original PDF
+
+```http
+GET /documents/{documentId}/file
+HEAD /documents/{documentId}/file
+```
+
+Returns the original PDF for the authenticated document owner. The frontend uses
+this endpoint to preview individual pages after retrieving source passages.
+
+### Retry failed processing
+
+```http
+POST /documents/{documentId}/retry
+```
+
+Requeues a retryable processing failure and resets its processing attempt state.
+Permanent failures, such as PDFs requiring OCR, cannot be retried.
+
+### List question history
+
+```http
+GET /documents/{documentId}/questions
+```
+
+Returns previously completed questions, answers, and retrieved source metadata
+for the authenticated document owner.
 
 ### Ask a question
 
@@ -387,8 +420,9 @@ generated, optionally followed by a `sources` event with retrieved chunk text,
 offsets, and page ranges, and a final `done` event. Page ranges use one-based
 PDF page numbers. Questions are single-turn and must target a completed
 document. The frontend prevents concurrent questions, displays the generated
-answer only, and cancels the stream when the user stops it or switches
-documents. Source metadata remains part of the API stream for API consumers.
+answer and retrieved source passages, and cancels the stream when the user stops
+it or switches documents. Source metadata remains part of the API stream for API
+consumers.
 PDFs without extractable text, including scanned PDFs without an embedded text
 layer, fail processing and cannot be questioned. Document routes require an
  JWT cookie. The API validates the configured issuer and expiry and
@@ -470,6 +504,11 @@ The main API environment variables are:
 | `DATABASE_URL` | PostgreSQL connection string, using the required production database variables | `postgres://${POSTGRES_USER}@db:5432/${POSTGRES_DB}?sslmode=disable` |
 | `UPLOAD_DIRECTORY` | Directory where uploaded PDFs are stored | `/data` |
 | `UPLOAD_ORPHAN_MIN_AGE` | Minimum age before an unreferenced uploaded object is removed | `1h` |
+| `OBJECT_STORAGE_ENDPOINT` | S3-compatible object-storage endpoint; filesystem storage is used when unset | unset locally, `minio:9000` in Compose |
+| `OBJECT_STORAGE_ACCESS_KEY` | Object-storage access key | `MINIO_ROOT_USER` in Compose |
+| `OBJECT_STORAGE_SECRET_KEY` | Object-storage secret key | `MINIO_ROOT_PASSWORD` in Compose |
+| `OBJECT_STORAGE_BUCKET` | Object-storage bucket name | `documind` |
+| `OBJECT_STORAGE_SECURE` | Use TLS for the object-storage connection | `false` |
 | `DOCUMENT_PROCESSOR_GRPC_URL` | gRPC address of the document processor | `document-processor:50051` |
 | `DOCUMENT_JOB_MAX_ATTEMPTS` | Maximum processing attempts before permanent failure | `5` |
 | `DOCUMENT_JOB_INITIAL_BACKOFF` | Delay after the first temporary failure | `5s` |
@@ -478,11 +517,17 @@ The main API environment variables are:
 | `DOCUMENT_JOB_LEASE_RENEWAL` | Interval for renewing active leases | `30s` |
 | `DOCUMENT_JOB_PROCESSING_TIMEOUT` | Maximum duration of one processing attempt | `30m` |
 | `DOCUMENT_JOB_POLL_INTERVAL` | Worker delay when no job is available or claiming fails | `1s` |
+| `DOCUMENT_JOB_WORKERS` | Number of API document-processing workers | `2` |
+| `DB_MAX_OPEN_CONNS` | Maximum PostgreSQL connections in the API pool | `25` |
+| `DB_MAX_IDLE_CONNS` | Maximum idle PostgreSQL connections in the API pool | `5` |
+| `DB_CONN_MAX_LIFETIME` | Maximum lifetime of a PostgreSQL connection | `30m` |
+| `DB_CONN_MAX_IDLE_TIME` | Maximum idle time of a PostgreSQL connection | `5m` |
 | `ANSWER_GENERATION_TIMEOUT` | Maximum duration of question embedding, retrieval, and answer generation | `5m` |
 | `OLLAMA_URL` | Ollama embedding API address | `http://ollama:11434` |
 | `OLLAMA_EMBEDDING_MODEL` | Ollama embedding model | `nomic-embed-text` |
 | `OLLAMA_CHAT_MODEL` | Ollama answer-generation model | `qwen2.5:7b` |
 | `OLLAMA_CHAT_TIMEOUT` | Ollama answer request timeout in seconds | `120` |
+| `GRPC_MAX_WORKERS` | Maximum processor gRPC server worker threads | `4` |
 | `EMBEDDING_DIMENSIONS` | Expected vector dimension | `768` |
 | `INGESTION_CAPACITY` | Maximum concurrent PDF processing streams | `2` |
 | `QUESTION_CAPACITY` | Maximum concurrent answer streams | `2` |
