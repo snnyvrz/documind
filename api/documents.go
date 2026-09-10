@@ -364,6 +364,9 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "could not embed question"})
 	}
+	if embedding.Dimensions != maxEmbeddingDimensions || len(embedding.Embedding) != int(maxEmbeddingDimensions) {
+		return c.JSON(http.StatusServiceUnavailable, map[string]string{"error": "document processor returned an invalid embedding dimension"})
+	}
 	vector := "["
 	for i, value := range embedding.Embedding {
 		if i > 0 {

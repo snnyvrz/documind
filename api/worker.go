@@ -20,6 +20,10 @@ import (
 )
 
 const maxGRPCMessageSize = maxUploadSize + (1 << 20)
+const maxEmbeddingDimensions uint32 = 768
+const maxExtractedTextBytes uint64 = 25 * 1024 * 1024
+const maxProcessedPages uint32 = 500
+const maxProcessedChunks uint32 = 10000
 
 type workerConfig struct {
 	workers           int
@@ -225,9 +229,12 @@ func processDocument(ctx context.Context, storage documentStorage, document *doc
 		return "", 0, nil, &jobError{cause: err, message: "could not read uploaded PDF", permanent: true}
 	}
 	defer file.Close()
-	pdf, err := io.ReadAll(file)
+	pdf, err := io.ReadAll(io.LimitReader(file, maxUploadSize+1))
 	if err != nil {
 		return "", 0, nil, &jobError{cause: err, message: "could not read uploaded PDF", permanent: true}
+	}
+	if int64(len(pdf)) > maxUploadSize {
+		return "", 0, nil, &jobError{message: "uploaded PDF exceeds the maximum size", permanent: true}
 	}
 	connection, err := grpc.NewClient(
 		processorAddress(),
@@ -261,7 +268,7 @@ func processDocument(ctx context.Context, storage documentStorage, document *doc
 			return "", 0, nil, processorError(receiveErr)
 		}
 		if metadata := event.GetMetadata(); metadata != nil {
-			if metadataReceived || metadata.EmbeddingDimensions != embeddingDimensions() || metadata.DocumentId != document.ID {
+			if metadataReceived || metadata.EmbeddingDimensions != maxEmbeddingDimensions || metadata.DocumentId != document.ID || metadata.PageCount == 0 || metadata.PageCount > maxProcessedPages || uint64(len(metadata.Text)) > maxExtractedTextBytes || metadata.ChunkCount > maxProcessedChunks {
 				return "", 0, nil, &jobError{message: "document processor returned an invalid document", permanent: true}
 			}
 			text = metadata.Text
@@ -276,12 +283,18 @@ func processDocument(ctx context.Context, storage documentStorage, document *doc
 		}
 		nextBatch++
 		for _, chunk := range batch.Chunks {
+			if uint32(len(chunks)) >= maxProcessedChunks {
+				return "", 0, nil, &jobError{message: "document processor returned too many chunks", permanent: true}
+			}
 			if chunk.Index != nextChunk {
 				return "", 0, nil, &jobError{message: "document processor returned invalid chunk indexes", permanent: true}
 			}
 			nextChunk++
-			if len(chunk.Embedding) != int(embeddingDimensions()) {
+			if len(chunk.Embedding) != int(maxEmbeddingDimensions) {
 				return "", 0, nil, &jobError{message: "document processor returned an invalid embedding", permanent: true}
+			}
+			if len(chunk.Text) == 0 || len(chunk.Text) > 100000 {
+				return "", 0, nil, &jobError{message: "document processor returned invalid chunk text", permanent: true}
 			}
 			if chunk.PageStart == 0 || chunk.PageEnd < chunk.PageStart || chunk.PageEnd > pageCount {
 				return "", 0, nil, &jobError{message: "document processor returned invalid page metadata", permanent: true}
@@ -332,5 +345,5 @@ func embeddingDimensions() uint32 {
 			return dimensions
 		}
 	}
-	return 768
+	return maxEmbeddingDimensions
 }

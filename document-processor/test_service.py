@@ -77,7 +77,7 @@ def test_process_rejects_documents_without_extractable_text() -> None:
     with patch("service.PdfReader", return_value=SimpleNamespace(pages=[page])), pytest.raises(AbortCalled):
         list(DocumentProcessor().Process(SimpleNamespace(pdf=b"%PDF-", document_id="document-1"), context))
 
-    context.abort.assert_called_once_with(grpc.StatusCode.INVALID_ARGUMENT, "could not process PDF: PDF contains no extractable text")
+    context.abort.assert_called_once_with(grpc.StatusCode.INVALID_ARGUMENT, "could not process PDF: PDF contains no extractable text; OCR is required for scanned PDFs")
 
 
 def test_chat_places_temperature_in_ollama_options() -> None:

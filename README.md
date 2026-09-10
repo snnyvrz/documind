@@ -450,8 +450,14 @@ The main API environment variables are:
 | `OLLAMA_CHAT_MODEL` | Ollama answer-generation model | `qwen2.5:7b` |
 | `OLLAMA_CHAT_TIMEOUT` | Ollama answer request timeout in seconds | `120` |
 | `EMBEDDING_DIMENSIONS` | Expected vector dimension | `768` |
-| `CHUNK_SIZE` | Chunk size in characters | `4000` |
-| `CHUNK_OVERLAP` | Chunk overlap in characters | `400` |
+| `MAX_PDF_PAGES` | Maximum pages extracted from one PDF | `500` |
+| `MAX_EXTRACTED_TEXT_BYTES` | Maximum UTF-8 extracted text per PDF | `26214400` |
+| `MAX_CHUNKS` | Maximum chunks produced per PDF | `10000` |
+| `PDF_EXTRACTION_TIMEOUT` | Maximum isolated extraction time in seconds | `60` |
+| `PDF_EXTRACTION_MEMORY_BYTES` | Maximum isolated extraction address space | `536870912` |
+| `PDF_EXTRACTION_CPU_SECONDS` | Maximum isolated extraction CPU time | `60` |
+| `TOKEN_CHUNK_SIZE` | Target chunk size in whitespace-token units | `800` |
+| `TOKEN_CHUNK_OVERLAP` | Chunk overlap in whitespace-token units | `80` |
 | `EMBEDDING_BATCH_SIZE` | Chunks embedded per streamed batch | `32` |
 | `RETRIEVAL_LIMIT` | Number of nearest chunks supplied to answer generation | `5` |
 
@@ -468,8 +474,12 @@ For local development, use `api/.env.example` with `AUTH_MODE=development` and
 an explicitly configured local database.
 
 The default embedding model is `nomic-embed-text`, which produces
-768-dimensional vectors. A different model must produce the configured
-`EMBEDDING_DIMENSIONS` value unless the vector column is migrated.
+768-dimensional vectors. `EMBEDDING_DIMENSIONS` must remain `768` because the
+database column is `vector(768)`; changing dimensions requires a coordinated
+embedding-model and database migration.
+
+PDFs with no extractable text are rejected with an OCR-required error. OCR is
+not currently enabled, so scanned PDFs must be OCR-processed before upload.
 
 ## Protobuf
 

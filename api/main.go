@@ -22,6 +22,9 @@ func main() {
 	if err := validateProductionAuthConfig(); err != nil {
 		panic(err)
 	}
+	if embeddingDimensions() != maxEmbeddingDimensions {
+		panic("EMBEDDING_DIMENSIONS must be 768 because the database uses vector(768)")
+	}
 
 	uploadDirectory, err := uploadDirectory()
 	if err != nil {

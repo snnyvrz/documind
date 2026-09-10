@@ -5,7 +5,7 @@ DocuMind: a PDF-document upload and embedding service. The repo contains indepen
 ## Layout
 
 - `api/` — Go 1.26 backend. Module name is `api` (not a host path). HTTP server on `:1323` using **labstack/echo v5** (note: context params are `*echo.Context`, not v4's value type), GORM + PostgreSQL, and a background worker that calls the processor over gRPC.
-- `document-processor/` — Python 3.14 `uv` project. FastAPI health server on `:8000`, gRPC processor on `:50051`, PDF extraction/chunking, and Ollama embedding/chat integration.
+- `document-processor/` — Python 3.14 `uv` project. FastAPI health server on `:8000`, gRPC processor on `:50051`, isolated resource-limited PDF extraction, paragraph/token-aware chunking, and Ollama embedding/chat integration. Scanned PDFs without extractable text are rejected because OCR is not enabled.
 - `frontend/` — React 19 + Vite 8 + Tailwind v4 + shadcn/ui. **Bun** is the package manager (`bun.lock` committed; never add a `package-lock.json`). Path alias `@/*` → `src/*`. React Compiler is enabled via `@rolldown/plugin-babel` + `reactCompilerPreset` in `vite.config.ts`. Document polling and answer SSE streaming live in cancellation-aware hooks; the current UI displays the generated answer without rendering extracted text, chunks, or source citations.
 - `proto/` — shared protobuf contract; generated bindings are committed under `api/proto/` and `document-processor/generated/`.
 - `compose.yaml` — full-stack run: PostgreSQL (`db`, port 5432), Ollama, `document-processor`, `api` (1323), and `frontend` under nginx (8080, proxies `/documents` → `api`). Uploaded PDFs are bind-mounted from host `data/` to `/data` in the API container; PostgreSQL and Ollama use named volumes.
@@ -52,6 +52,7 @@ CI-equivalent checks:
 - Tailwind is v4: CSS-first config (`@import "tailwindcss"` in `src/index.css`), `@tailwindcss/vite` plugin, no `tailwind.config.*` file.
 - shadcn/ui uses registry style `base-rhea` (`components.json`); shadcn components live in `src/components/ui/`.
 - API upload limit is 20 MB (`http.MaxBytesReader`) and PDFs are validated by `%PDF-` magic bytes — keep this in sync with nginx `client_max_body_size` (currently local to the container nginx config).
+- Document processing additionally limits pages, extracted text, chunks, and isolated extraction CPU/memory/time through `MAX_PDF_PAGES`, `MAX_EXTRACTED_TEXT_BYTES`, `MAX_CHUNKS`, `PDF_EXTRACTION_TIMEOUT`, `PDF_EXTRACTION_MEMORY_BYTES`, and `PDF_EXTRACTION_CPU_SECONDS`. `EMBEDDING_DIMENSIONS` must stay `768` for the `vector(768)` database column.
 - Document routes are `POST /documents`, `GET /documents`, `GET /documents/:id`, `GET /documents/:id/chunks`, `DELETE /documents/:id`, and `POST /documents/:id/questions`.
 - Document selection is a cancellation boundary: switching or deleting a document must abort its status polling and answer stream and clear the current answer.
 - Question submission needs an in-flight guard. Enter and button actions must not start a second answer stream while one is active.
