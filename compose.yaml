@@ -9,8 +9,8 @@ services:
       UPLOAD_DIRECTORY: /data
       UPLOAD_ORPHAN_MIN_AGE: ${UPLOAD_ORPHAN_MIN_AGE:-1h}
       OBJECT_STORAGE_ENDPOINT: ${OBJECT_STORAGE_ENDPOINT:-minio:9000}
-      OBJECT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:-documind}
-      OBJECT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-documind-secret}
+      OBJECT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      OBJECT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
       OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-documind}
       DOCUMENT_PROCESSOR_GRPC_URL: document-processor:50051
       DOCUMENT_JOB_MAX_ATTEMPTS: ${DOCUMENT_JOB_MAX_ATTEMPTS:-5}
@@ -30,6 +30,7 @@ services:
       AUTH_JWT_TTL: ${AUTH_JWT_TTL:-8h}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}
       AUTH_REQUIRE_HTTPS: ${AUTH_REQUIRE_HTTPS:-true}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:?TRUSTED_PROXY_CIDRS is required}
       DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-25}
       DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-5}
       DB_CONN_MAX_LIFETIME: ${DB_CONN_MAX_LIFETIME:-30m}
@@ -91,8 +92,8 @@ services:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-documind}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-documind-secret}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
     expose:
       - "9000"
       - "9001"
@@ -142,6 +143,8 @@ services:
   frontend:
     build:
       context: ./frontend
+    environment:
+      TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:?TRUSTED_PROXY_CIDR is required}
     ports:
       - "8080:80"
     depends_on:

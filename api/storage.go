@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -104,6 +105,9 @@ func newObjectStorage(ctx context.Context) (documentStorage, error) {
 	endpoint := getenv("OBJECT_STORAGE_ENDPOINT", "")
 	if endpoint == "" {
 		return nil, os.ErrNotExist
+	}
+	if os.Getenv("OBJECT_STORAGE_ACCESS_KEY") == "" || os.Getenv("OBJECT_STORAGE_SECRET_KEY") == "" {
+		return nil, errors.New("OBJECT_STORAGE_ACCESS_KEY and OBJECT_STORAGE_SECRET_KEY are required when object storage is enabled")
 	}
 	secure := getenv("OBJECT_STORAGE_SECURE", "false") == "true"
 	client, err := minio.New(endpoint, &minio.Options{Creds: credentials.NewStaticV4(os.Getenv("OBJECT_STORAGE_ACCESS_KEY"), os.Getenv("OBJECT_STORAGE_SECRET_KEY"), ""), Secure: secure})

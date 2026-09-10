@@ -412,12 +412,21 @@ stored in browser storage. Configure `AUTH_JWT_SECRET` with at least 32 random
 characters for shared deployments. Production also requires
 `AUTH_COOKIE_SECURE=true` and `AUTH_REQUIRE_HTTPS=true`; TLS must terminate at
 the external reverse proxy, which must forward `X-Forwarded-Proto: https`.
-The bundled nginx proxy preserves that header when forwarding to the API.
+The bundled nginx proxy preserves that header when forwarding to the API. Set
+`TRUSTED_PROXY_CIDR` to the external proxy network so nginx can resolve the
+original client address, and set `TRUSTED_PROXY_CIDRS` to the proxy networks
+that may provide forwarded client headers. Requests from peers outside those
+networks are rate-limited using their direct peer address and cannot spoof
+`X-Forwarded-For` or `X-Real-IP`.
 
 Authentication requests are limited by source IP and normalized account, use an
 8 KiB request-body limit, and reject passwords shorter than 8 characters or
 longer than 72 bytes. These rate limits are process-local and must be replaced
 with shared rate-limit storage when running multiple API replicas.
+
+Compose requires `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` explicitly. Use
+unique deployment-specific values; the stack does not provide bundled MinIO
+credentials.
 
 For local API development, `AUTH_MODE=development` allows requests to use the
 fixed local principal when no JWT secret is configured. The local Compose E2E

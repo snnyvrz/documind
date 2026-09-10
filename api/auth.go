@@ -39,13 +39,14 @@ type authUser struct {
 }
 
 type jwtAuthenticator struct {
-	secret       []byte
-	issuer       string
-	ttl          time.Duration
-	secureCookie bool
-	requireHTTPS bool
-	database     *gorm.DB
-	limiter      *authRateLimiter
+	secret         []byte
+	issuer         string
+	ttl            time.Duration
+	secureCookie   bool
+	requireHTTPS   bool
+	database       *gorm.DB
+	limiter        *authRateLimiter
+	trustedProxies []*net.IPNet
 }
 
 type authCredentials struct {
@@ -60,13 +61,17 @@ type jwtClaims struct {
 }
 
 func newAuthenticator(database *gorm.DB) (*jwtAuthenticator, error) {
+	trustedProxies, err := trustedProxyNetworks()
+	if err != nil {
+		return nil, err
+	}
 	secret := os.Getenv("AUTH_JWT_SECRET")
 	if database == nil && secret == "" {
-		return &jwtAuthenticator{limiter: newAuthRateLimiter()}, nil
+		return &jwtAuthenticator{limiter: newAuthRateLimiter(), trustedProxies: trustedProxies}, nil
 	}
 	if secret == "" {
 		if authMode() == "development" && database == nil {
-			return &jwtAuthenticator{limiter: newAuthRateLimiter()}, nil
+			return &jwtAuthenticator{limiter: newAuthRateLimiter(), trustedProxies: trustedProxies}, nil
 		}
 		return nil, errors.New("AUTH_JWT_SECRET is required")
 	}
@@ -90,7 +95,7 @@ func newAuthenticator(database *gorm.DB) (*jwtAuthenticator, error) {
 		}
 		ttl = parsed
 	}
-	return &jwtAuthenticator{secret: []byte(secret), issuer: getenv("AUTH_JWT_ISSUER", defaultJWTIssuer), ttl: ttl, secureCookie: secureCookie, requireHTTPS: requireHTTPS, database: database, limiter: newAuthRateLimiter(database)}, nil
+	return &jwtAuthenticator{secret: []byte(secret), issuer: getenv("AUTH_JWT_ISSUER", defaultJWTIssuer), ttl: ttl, secureCookie: secureCookie, requireHTTPS: requireHTTPS, database: database, limiter: newAuthRateLimiter(database), trustedProxies: trustedProxies}, nil
 }
 
 func (a *jwtAuthenticator) middleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -130,7 +135,7 @@ func (a *jwtAuthenticator) register(c *echo.Context) error {
 	if err := a.requireHTTPSRequest(c); err != nil {
 		return err
 	}
-	if !a.limiter.allow("register-ip", clientIP(c.Request()), authRegisterIPLimit, authRegisterWindow) {
+	if !a.limiter.allow("register-ip", clientIP(c.Request(), a.trustedProxies), authRegisterIPLimit, authRegisterWindow) {
 		return quotaResponse(c, "too many registration attempts")
 	}
 	credentials, err := decodeCredentials(c)
@@ -161,7 +166,7 @@ func (a *jwtAuthenticator) login(c *echo.Context) error {
 	if err := a.requireHTTPSRequest(c); err != nil {
 		return err
 	}
-	if !a.limiter.allow("login-ip", clientIP(c.Request()), authLoginIPLimit, authLoginWindow) {
+	if !a.limiter.allow("login-ip", clientIP(c.Request(), a.trustedProxies), authLoginIPLimit, authLoginWindow) {
 		return quotaResponse(c, "too many login attempts")
 	}
 	credentials, err := decodeCredentials(c)
@@ -276,27 +281,71 @@ func validateCredentials(credentials authCredentials) error {
 }
 
 func (a *jwtAuthenticator) requireHTTPSRequest(c *echo.Context) error {
-	if a.requireHTTPS && strings.ToLower(strings.TrimSpace(c.Request().Header.Get("X-Forwarded-Proto"))) != "https" {
+	request := c.Request()
+	forwardedHTTPS := ipInNetworks(requestPeerIP(request), a.trustedProxies) && strings.EqualFold(strings.TrimSpace(request.Header.Get("X-Forwarded-Proto")), "https")
+	if a.requireHTTPS && request.TLS == nil && !forwardedHTTPS {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "HTTPS is required"})
 	}
 	return nil
 }
 
-func clientIP(request *http.Request) string {
-	if value := strings.TrimSpace(request.Header.Get("X-Real-IP")); value != "" {
-		return value
+func clientIP(request *http.Request, trustedProxies []*net.IPNet) string {
+	peer := requestPeerIP(request)
+	if ipInNetworks(peer, trustedProxies) {
+		forwarded := strings.Split(request.Header.Get("X-Forwarded-For"), ",")
+		for index := len(forwarded) - 1; index >= 0; index-- {
+			candidate := net.ParseIP(strings.TrimSpace(forwarded[index]))
+			if candidate != nil && !ipInNetworks(candidate, trustedProxies) {
+				return candidate.String()
+			}
+		}
+		if value := net.ParseIP(strings.TrimSpace(request.Header.Get("X-Real-IP"))); value != nil {
+			return value.String()
+		}
 	}
-	if value := strings.TrimSpace(strings.Split(request.Header.Get("X-Forwarded-For"), ",")[0]); value != "" {
-		return value
-	}
-	host, _, err := net.SplitHostPort(request.RemoteAddr)
-	if err == nil {
-		return host
+	if peer != nil {
+		return peer.String()
 	}
 	if request.RemoteAddr != "" {
 		return request.RemoteAddr
 	}
 	return "unknown"
+}
+
+func requestPeerIP(request *http.Request) net.IP {
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err == nil {
+		return net.ParseIP(host)
+	}
+	return net.ParseIP(strings.TrimSpace(request.RemoteAddr))
+}
+
+func ipInNetworks(ip net.IP, networks []*net.IPNet) bool {
+	if ip == nil {
+		return false
+	}
+	for _, network := range networks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func trustedProxyNetworks() ([]*net.IPNet, error) {
+	value := strings.TrimSpace(os.Getenv("TRUSTED_PROXY_CIDRS"))
+	if value == "" {
+		return nil, nil
+	}
+	var networks []*net.IPNet
+	for _, raw := range strings.Split(value, ",") {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(raw))
+		if err != nil {
+			return nil, errors.New("TRUSTED_PROXY_CIDRS contains an invalid CIDR")
+		}
+		networks = append(networks, network)
+	}
+	return networks, nil
 }
 
 func normalizeEmail(email string) string { return strings.ToLower(strings.TrimSpace(email)) }
