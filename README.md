@@ -468,6 +468,9 @@ The main API environment variables are:
 | `OLLAMA_CHAT_MODEL` | Ollama answer-generation model | `qwen2.5:7b` |
 | `OLLAMA_CHAT_TIMEOUT` | Ollama answer request timeout in seconds | `120` |
 | `EMBEDDING_DIMENSIONS` | Expected vector dimension | `768` |
+| `INGESTION_CAPACITY` | Maximum concurrent PDF processing streams | `2` |
+| `QUESTION_CAPACITY` | Maximum concurrent answer streams | `2` |
+| `EMBEDDING_CAPACITY` | Maximum concurrent question/document embedding requests | `2` |
 | `MAX_PDF_PAGES` | Maximum pages extracted from one PDF | `500` |
 | `MAX_EXTRACTED_TEXT_BYTES` | Maximum UTF-8 extracted text per PDF | `26214400` |
 | `MAX_CHUNKS` | Maximum chunks produced per PDF | `10000` |

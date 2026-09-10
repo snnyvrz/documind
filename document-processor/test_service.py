@@ -80,6 +80,52 @@ def test_process_rejects_documents_without_extractable_text() -> None:
     context.abort.assert_called_once_with(grpc.StatusCode.INVALID_ARGUMENT, "could not process PDF: PDF contains no extractable text; OCR is required for scanned PDFs")
 
 
+@pytest.mark.parametrize("close_after", [1, 2, 3, 4])
+def test_process_releases_ingestion_slot_when_stream_is_closed_at_each_stage(close_after: int) -> None:
+    request = SimpleNamespace(pdf=b"%PDF-", document_id="document-1")
+    context = Mock()
+    context.is_active.return_value = True
+    document_chunks = [
+        ("first", 0, 5, 1, 1),
+        ("second", 6, 12, 1, 1),
+        ("third", 13, 18, 1, 1),
+    ]
+
+    with (
+        patch("service.extract_pages", return_value=["document text"]),
+        patch("service.chunks", return_value=document_chunks),
+        patch("service.EMBEDDING_BATCH_SIZE", 1),
+        patch("service.embed", return_value=[[0.0] * 768]),
+        patch("service.release_slot") as release,
+    ):
+        events = DocumentProcessor().Process(request, context)
+        for _ in range(close_after):
+            next(events)
+        events.close()
+
+    release.assert_called_once()
+
+
+def test_process_releases_ingestion_slot_when_context_becomes_inactive() -> None:
+    request = SimpleNamespace(pdf=b"%PDF-", document_id="document-1")
+    context = Mock()
+    context.is_active.return_value = False
+
+    with (
+        patch("service.extract_pages", return_value=["document text"]),
+        patch("service.chunks", return_value=[("chunk", 0, 5, 1, 1)]),
+        patch("service.embed") as embed,
+        patch("service.release_slot") as release,
+    ):
+        events = DocumentProcessor().Process(request, context)
+        next(events)
+        with pytest.raises(StopIteration):
+            next(events)
+
+    embed.assert_not_called()
+    release.assert_called_once()
+
+
 def test_chat_places_temperature_in_ollama_options() -> None:
     response = Mock()
     response.__enter__ = Mock(return_value=response)

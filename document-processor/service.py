@@ -262,66 +262,65 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
             context.abort(grpc.StatusCode.UNAVAILABLE, "processor is draining")
         acquire_slot(ingestion_slots, context, "ingestion")
         try:
-            page_texts = extract_pages(request.pdf)
-            raw_text = "\n\n".join(page_texts)
-            leading = len(raw_text) - len(raw_text.lstrip())
-            text = raw_text.strip()
-            page_ranges = []
-            offset = 0
-            for page_number, page_text in enumerate(page_texts, start=1):
-                page_ranges.append((max(0, offset - leading), max(0, offset + len(page_text) - leading), page_number))
-                offset += len(page_text) + 2
-            if not text:
-                raise ValueError("PDF contains no extractable text; OCR is required for scanned PDFs")
-            document_chunks = chunks(text, page_ranges)
-        except Exception as error:
-            release_slot(ingestion_slots)
-            context.abort(
-                grpc.StatusCode.INVALID_ARGUMENT,
-                f"could not process PDF: {error}",
-            )
-
-        yield extractor_pb2.ProcessEvent(
-            metadata=extractor_pb2.ProcessMetadata(
-                document_id=request.document_id,
-                text=text,
-                page_count=len(page_texts),
-                chunk_count=len(document_chunks),
-                embedding_dimensions=EMBEDDING_DIMENSIONS,
-            )
-        )
-        for batch_index in range(0, len(document_chunks), EMBEDDING_BATCH_SIZE):
-            if not context.is_active() or draining.is_set():
-                release_slot(ingestion_slots)
-                return
-            batch = document_chunks[batch_index : batch_index + EMBEDDING_BATCH_SIZE]
             try:
-                vectors = embed([value for value, _, _, _, _ in batch])
+                page_texts = extract_pages(request.pdf)
+                raw_text = "\n\n".join(page_texts)
+                leading = len(raw_text) - len(raw_text.lstrip())
+                text = raw_text.strip()
+                page_ranges = []
+                offset = 0
+                for page_number, page_text in enumerate(page_texts, start=1):
+                    page_ranges.append((max(0, offset - leading), max(0, offset + len(page_text) - leading), page_number))
+                    offset += len(page_text) + 2
+                if not text:
+                    raise ValueError("PDF contains no extractable text; OCR is required for scanned PDFs")
+                document_chunks = chunks(text, page_ranges)
             except Exception as error:
-                release_slot(ingestion_slots)
                 context.abort(
-                    grpc.StatusCode.UNAVAILABLE,
-                    f"could not embed PDF: {error}",
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    f"could not process PDF: {error}",
                 )
 
             yield extractor_pb2.ProcessEvent(
-                chunk_batch=extractor_pb2.ChunkBatch(
-                    batch_index=batch_index // EMBEDDING_BATCH_SIZE,
-                    chunks=[
-                        extractor_pb2.Chunk(
-                            index=batch_index + offset,
-                            text=value,
-                            start_offset=start,
-                            end_offset=end,
-                            page_start=page_start,
-                            page_end=page_end,
-                            embedding=vector,
-                        )
-                        for offset, ((value, start, end, page_start, page_end), vector) in enumerate(zip(batch, vectors))
-                    ],
+                metadata=extractor_pb2.ProcessMetadata(
+                    document_id=request.document_id,
+                    text=text,
+                    page_count=len(page_texts),
+                    chunk_count=len(document_chunks),
+                    embedding_dimensions=EMBEDDING_DIMENSIONS,
                 )
             )
-        release_slot(ingestion_slots)
+            for batch_index in range(0, len(document_chunks), EMBEDDING_BATCH_SIZE):
+                if not context.is_active() or draining.is_set():
+                    return
+                batch = document_chunks[batch_index : batch_index + EMBEDDING_BATCH_SIZE]
+                try:
+                    vectors = embed([value for value, _, _, _, _ in batch])
+                except Exception as error:
+                    context.abort(
+                        grpc.StatusCode.UNAVAILABLE,
+                        f"could not embed PDF: {error}",
+                    )
+
+                yield extractor_pb2.ProcessEvent(
+                    chunk_batch=extractor_pb2.ChunkBatch(
+                        batch_index=batch_index // EMBEDDING_BATCH_SIZE,
+                        chunks=[
+                            extractor_pb2.Chunk(
+                                index=batch_index + offset,
+                                text=value,
+                                start_offset=start,
+                                end_offset=end,
+                                page_start=page_start,
+                                page_end=page_end,
+                                embedding=vector,
+                            )
+                            for offset, ((value, start, end, page_start, page_end), vector) in enumerate(zip(batch, vectors))
+                        ],
+                    )
+                )
+        finally:
+            release_slot(ingestion_slots)
 
 
 def serve_grpc() -> None:
