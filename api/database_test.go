@@ -27,6 +27,7 @@ func TestClaimNextCommitsExhaustionCleanupWhenNoJobIsAvailable(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE documents
  SET status = 'failed', error_message = 'document processing failed after maximum attempts',
+     failure_kind = CASE WHEN failure_kind = 'permanent' THEN 'permanent' ELSE 'retryable' END,
      next_attempt_at = NULL, lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
  WHERE attempt_count >= $1 AND (
      (status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())) OR

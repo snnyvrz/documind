@@ -42,6 +42,11 @@ type jobError struct {
 	permanent bool
 }
 
+const (
+	failureKindPermanent = "permanent"
+	failureKindRetryable = "retryable"
+)
+
 func (e *jobError) Error() string {
 	if e.cause == nil {
 		return e.message
@@ -191,7 +196,11 @@ func processNext(ctx context.Context, storageInput any, store documentStore, con
 		if metricCollector != nil {
 			metricCollector.processingFailures.Add(1)
 		}
-		return store.Fail(ctx, claimed.ID, leaseToken, processingErr.message)
+		kind := failureKindRetryable
+		if processingErr.permanent {
+			kind = failureKindPermanent
+		}
+		return store.Fail(ctx, claimed.ID, leaseToken, processingErr.message, kind)
 	}
 	return store.Retry(ctx, claimed.ID, leaseToken, time.Now().UTC().Add(retryBackoff(claimed.AttemptCount, config)))
 }

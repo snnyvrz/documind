@@ -50,13 +50,14 @@ type documentSource struct {
 }
 
 type documentSummary struct {
-	DocumentID string    `json:"documentId"`
-	Filename   string    `json:"filename"`
-	Status     string    `json:"status"`
-	PageCount  uint32    `json:"pageCount"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
-	Error      *string   `json:"error,omitempty"`
+	DocumentID  string    `json:"documentId"`
+	Filename    string    `json:"filename"`
+	Status      string    `json:"status"`
+	PageCount   uint32    `json:"pageCount"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	Error       *string   `json:"error,omitempty"`
+	FailureKind string    `json:"failureKind,omitempty"`
 }
 
 func newDocumentHandler(uploadDirectory string, store documentStore, storages ...documentStorage) *documentHandler {
@@ -201,7 +202,7 @@ func (h *documentHandler) List(c *echo.Context) error {
 			rows = rows[:limit]
 		}
 		for _, row := range rows {
-			result.Items = append(result.Items, documentSummary{DocumentID: row.ID, Filename: row.OriginalFilename, Status: row.Status, PageCount: row.PageCount, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, Error: row.ErrorMessage})
+			result.Items = append(result.Items, documentSummary{DocumentID: row.ID, Filename: row.OriginalFilename, Status: row.Status, PageCount: row.PageCount, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, Error: row.ErrorMessage, FailureKind: failureKindFor(row.Status, row.FailureKind)})
 		}
 		if result.HasMore && len(rows) > 0 {
 			last := rows[len(rows)-1]
@@ -222,7 +223,7 @@ func (h *documentHandler) List(c *echo.Context) error {
 		if search != "" && !strings.Contains(strings.ToLower(document.OriginalFilename), strings.ToLower(search)) {
 			continue
 		}
-		result = append(result, documentSummary{DocumentID: document.ID, Filename: document.OriginalFilename, Status: document.Status, PageCount: document.PageCount, CreatedAt: document.CreatedAt, UpdatedAt: document.UpdatedAt, Error: document.ErrorMessage})
+		result = append(result, documentSummary{DocumentID: document.ID, Filename: document.OriginalFilename, Status: document.Status, PageCount: document.PageCount, CreatedAt: document.CreatedAt, UpdatedAt: document.UpdatedAt, Error: document.ErrorMessage, FailureKind: failureKindFor(document.Status, document.FailureKind)})
 	}
 	if len(result) > limit {
 		result = result[:limit]
@@ -236,6 +237,9 @@ func (h *documentHandler) Get(c *echo.Context) error {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
 	}
 	response := map[string]any{"documentId": document.ID, "filename": document.OriginalFilename, "status": document.Status, "pageCount": document.PageCount, "attemptCount": document.AttemptCount}
+	if document.Status == "failed" {
+		response["failureKind"] = failureKindFor(document.Status, document.FailureKind)
+	}
 	if document.NextAttemptAt != nil {
 		response["nextAttemptAt"] = document.NextAttemptAt
 	}
@@ -385,9 +389,22 @@ func (h *documentHandler) Delete(c *echo.Context) error {
 func (h *documentHandler) Retry(c *echo.Context) error {
 	id := c.Param("id")
 	if err := h.store.RetryOwned(c.Request().Context(), principal(c), id); err != nil {
+		if errors.Is(err, errPermanentFailure) {
+			return c.JSON(http.StatusConflict, map[string]string{"error": "this document cannot be retried; OCR is required for scanned PDFs or the PDF must be corrected"})
+		}
 		return c.JSON(http.StatusConflict, map[string]string{"error": "only failed documents can be retried"})
 	}
 	return c.JSON(http.StatusAccepted, map[string]string{"documentId": id, "status": "queued"})
+}
+
+func failureKindFor(status, kind string) string {
+	if status != "failed" {
+		return ""
+	}
+	if kind == failureKindPermanent {
+		return failureKindPermanent
+	}
+	return failureKindRetryable
 }
 
 func (h *documentHandler) Questions(c *echo.Context) error {

@@ -1,4 +1,5 @@
 export type DocumentStatus = "queued" | "processing" | "completed" | "failed";
+export type FailureKind = "permanent" | "retryable";
 
 export type ListedDocument = {
   documentId: string;
@@ -7,6 +8,7 @@ export type ListedDocument = {
   pageCount?: number;
   createdAt: string;
   error?: string;
+  failureKind?: FailureKind;
 };
 
 export type DocumentListResponse = {
@@ -22,6 +24,7 @@ export type DocumentDetails = {
   pageCount?: number;
   text?: string;
   error?: string;
+  failureKind?: FailureKind;
   attemptCount?: number;
   nextAttemptAt?: string;
 };

@@ -19,7 +19,7 @@ type documentStore interface {
 	RenewLease(context.Context, string, string, time.Duration) error
 	Retry(context.Context, string, string, time.Time) error
 	Complete(context.Context, string, string, string, uint32, []documentChunk) error
-	Fail(context.Context, string, string, string) error
+	Fail(context.Context, string, string, string, string) error
 	Find(context.Context, string) (*document, error)
 	ListChunks(context.Context, string) ([]documentChunk, error)
 	SearchChunks(context.Context, string, string, int) ([]documentChunk, error)
@@ -45,6 +45,7 @@ type documentSummaryRow struct {
 	Status           string
 	PageCount        uint32
 	ErrorMessage     *string
+	FailureKind      string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -72,6 +73,7 @@ type queueStatsStore interface {
 }
 
 var errLeaseLost = errors.New("document processing lease lost")
+var errPermanentFailure = errors.New("document processing failure is permanent")
 
 type documentChunk struct {
 	ID          string `gorm:"type:uuid;primaryKey"`
@@ -109,7 +111,8 @@ type document struct {
 	ExtractedText     *string `gorm:"type:text"`
 	Result            *string `gorm:"type:jsonb"`
 	ErrorMessage      *string
-	AttemptCount      int `gorm:"not null;default:0"`
+	FailureKind       string `gorm:"not null;default:'retryable'"`
+	AttemptCount      int    `gorm:"not null;default:0"`
 	NextAttemptAt     *time.Time
 	LeaseToken        *string
 	LeaseExpiresAt    *time.Time
@@ -574,7 +577,7 @@ func (s *postgresDocumentStore) DeleteOwned(ctx context.Context, ownerID, id str
 func (s *postgresDocumentStore) RetryOwned(ctx context.Context, ownerID, id string) error {
 	result := s.database.WithContext(ctx).Model(&document{}).
 		Where("id = ? AND owner_id = ? AND status = 'failed'", id, ownerID).
-		Updates(map[string]any{"status": "queued", "error_message": nil, "next_attempt_at": nil, "lease_token": nil, "lease_expires_at": nil, "attempt_count": 0, "updated_at": time.Now().UTC()})
+		Updates(map[string]any{"status": "queued", "error_message": nil, "failure_kind": failureKindRetryable, "next_attempt_at": nil, "lease_token": nil, "lease_expires_at": nil, "attempt_count": 0, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -589,6 +592,7 @@ func (s *postgresDocumentStore) ClaimNext(ctx context.Context, leaseToken string
 	err := s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		exhausted := tx.Exec(`UPDATE documents
 SET status = 'failed', error_message = 'document processing failed after maximum attempts',
+    failure_kind = CASE WHEN failure_kind = 'permanent' THEN 'permanent' ELSE 'retryable' END,
     next_attempt_at = NULL, lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
 WHERE attempt_count >= ? AND (
     (status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())) OR
@@ -661,7 +665,7 @@ func (s *postgresDocumentStore) RenewLease(ctx context.Context, id, leaseToken s
 func (s *postgresDocumentStore) Retry(ctx context.Context, id, leaseToken string, nextAttemptAt time.Time) error {
 	result := s.database.WithContext(ctx).Model(&document{}).
 		Where("id = ? AND status = 'processing' AND lease_token = ? AND lease_expires_at > NOW()", id, leaseToken).
-		Updates(map[string]any{"status": "queued", "next_attempt_at": nextAttemptAt, "lease_token": nil, "lease_expires_at": nil, "error_message": nil, "updated_at": time.Now().UTC()})
+		Updates(map[string]any{"status": "queued", "next_attempt_at": nextAttemptAt, "lease_token": nil, "lease_expires_at": nil, "error_message": nil, "failure_kind": failureKindRetryable, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return result.Error
 	}
@@ -694,10 +698,10 @@ func (s *postgresDocumentStore) Complete(ctx context.Context, id, leaseToken, te
 	})
 }
 
-func (s *postgresDocumentStore) Fail(ctx context.Context, id, leaseToken, message string) error {
+func (s *postgresDocumentStore) Fail(ctx context.Context, id, leaseToken, message, failureKind string) error {
 	result := s.database.WithContext(ctx).Model(&document{}).
 		Where("id = ? AND status = 'processing' AND lease_token = ? AND lease_expires_at > NOW()", id, leaseToken).
-		Updates(map[string]any{"status": "failed", "error_message": message, "next_attempt_at": nil, "lease_token": nil, "lease_expires_at": nil, "updated_at": time.Now().UTC()})
+		Updates(map[string]any{"status": "failed", "error_message": message, "failure_kind": failureKind, "next_attempt_at": nil, "lease_token": nil, "lease_expires_at": nil, "updated_at": time.Now().UTC()})
 	if result.Error != nil {
 		return result.Error
 	}

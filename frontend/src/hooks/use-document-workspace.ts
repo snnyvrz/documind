@@ -66,7 +66,7 @@ export function useDocumentWorkspace() {
     setDocuments((current) => current.map((document) => {
       const next = detailsById[document.documentId];
       if (!next || (next.status !== "completed" && next.status !== "failed")) return document;
-      return { ...document, status: next.status, pageCount: next.pageCount, error: next.error };
+      return { ...document, status: next.status, pageCount: next.pageCount, error: next.error, failureKind: next.failureKind };
     }));
   }, [detailsById]);
 
@@ -119,7 +119,7 @@ export function useDocumentWorkspace() {
     setRetryingId(documentId);
     try {
       await retryDocument(documentId);
-      setDocuments((current) => current.map((document) => document.documentId === documentId ? { ...document, status: "queued", error: undefined } : document));
+      setDocuments((current) => current.map((document) => document.documentId === documentId ? { ...document, status: "queued", error: undefined, failureKind: undefined } : document));
       setMessage({ type: "success", text: "Processing restarted." });
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "Could not retry document processing." });

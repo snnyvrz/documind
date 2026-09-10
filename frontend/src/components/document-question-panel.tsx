@@ -39,7 +39,9 @@ export function DocumentQuestionPanel({ documentId, filename, pageCount, history
         <p className="mt-1 truncate text-sm text-muted-foreground">{filename} · {pageCount ?? 0} pages</p>
       </div>
       <div className="flex flex-col gap-2 sm:flex-row">
+        <label htmlFor="document-question" className="sr-only">Question</label>
         <input
+          id="document-question"
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
           onKeyDown={(event) => {

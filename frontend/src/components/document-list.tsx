@@ -84,7 +84,7 @@ export function DocumentList({
                       aria-label="Processing"
                     />
                   )}
-                {document.status === "failed" && <Button type="button" variant="ghost" size="icon" aria-label={`Retry ${document.filename}`} disabled={retryingId === document.documentId} onClick={() => onRetry(document.documentId)}><RotateCcw className="size-4" aria-hidden="true" /></Button>}
+                {document.status === "failed" && document.failureKind !== "permanent" && <Button type="button" variant="ghost" size="icon" aria-label={`Retry ${document.filename}`} disabled={retryingId === document.documentId} onClick={() => onRetry(document.documentId)}><RotateCcw className="size-4" aria-hidden="true" /></Button>}
                 <Button
                   type="button"
                   variant="ghost"

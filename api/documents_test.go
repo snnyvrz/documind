@@ -91,8 +91,12 @@ func (s *memoryDocumentStore) RetryOwned(_ context.Context, ownerID, id string) 
 	defer s.mutex.Unlock()
 	for i := range s.documents {
 		if s.documents[i].ID == id && s.documents[i].OwnerID == ownerID && s.documents[i].Status == "failed" {
+			if s.documents[i].FailureKind == failureKindPermanent {
+				return errPermanentFailure
+			}
 			s.documents[i].Status = "queued"
 			s.documents[i].ErrorMessage = nil
+			s.documents[i].FailureKind = failureKindRetryable
 			s.documents[i].NextAttemptAt = nil
 			s.documents[i].AttemptCount = 0
 			return nil
@@ -113,6 +117,9 @@ func (s *memoryDocumentStore) ClaimNext(_ context.Context, leaseToken string, le
 			message := "document processing failed after maximum attempts"
 			document.Status = "failed"
 			document.ErrorMessage = &message
+			if document.FailureKind != failureKindPermanent {
+				document.FailureKind = failureKindRetryable
+			}
 			document.NextAttemptAt = nil
 			document.LeaseToken = nil
 			document.LeaseExpiresAt = nil
@@ -128,6 +135,7 @@ func (s *memoryDocumentStore) ClaimNext(_ context.Context, leaseToken string, le
 			document.AttemptCount++
 			document.NextAttemptAt = nil
 			document.ErrorMessage = nil
+			document.FailureKind = failureKindRetryable
 			document.LeaseToken = &leaseToken
 			document.LeaseExpiresAt = &expiresAt
 			claimed := *document
@@ -186,7 +194,7 @@ func (s *memoryDocumentStore) Complete(_ context.Context, id, leaseToken, text s
 	return errLeaseLost
 }
 
-func (s *memoryDocumentStore) Fail(_ context.Context, id, leaseToken, message string) error {
+func (s *memoryDocumentStore) Fail(_ context.Context, id, leaseToken, message, failureKind string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	for index := range s.documents {
@@ -194,6 +202,7 @@ func (s *memoryDocumentStore) Fail(_ context.Context, id, leaseToken, message st
 		if activeLease(document, id, leaseToken) {
 			document.Status = "failed"
 			document.ErrorMessage = &message
+			document.FailureKind = failureKind
 			document.LeaseToken = nil
 			document.LeaseExpiresAt = nil
 			return nil

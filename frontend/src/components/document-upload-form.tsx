@@ -52,9 +52,9 @@ export const DocumentUploadForm = () => {
       {workspace.selectedId && workspace.details?.documentId === workspace.selectedId && workspace.details.status === "failed" && (
         <div className="rounded-3xl border border-destructive/30 bg-destructive/5 p-6">
           <p className="text-xs font-semibold uppercase tracking-wider text-destructive">Processing failed</p>
-          <h3 className="mt-2 text-2xl font-semibold">This document needs another attempt</h3>
-          <p className="mt-2 text-sm text-muted-foreground">{workspace.details.error ?? "The document could not be prepared for questions."}</p>
-          <button type="button" className="mt-5 rounded-2xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50" disabled={workspace.retryingId === workspace.selectedId} onClick={() => void workspace.handleRetry(workspace.selectedId!)}>{workspace.retryingId === workspace.selectedId ? "Retrying..." : "Retry processing"}</button>
+           <h3 className="mt-2 text-2xl font-semibold">{workspace.details.failureKind === "permanent" ? "This document cannot be processed" : "This document needs another attempt"}</h3>
+           <p className="mt-2 text-sm text-muted-foreground">{workspace.details.failureKind === "permanent" && workspace.details.error?.includes("OCR") ? "This PDF has no extractable text. OCR is required for scanned PDFs." : workspace.details.error ?? "The document could not be prepared for questions."}</p>
+           {workspace.details.failureKind !== "permanent" && <button type="button" className="mt-5 rounded-2xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50" disabled={workspace.retryingId === workspace.selectedId} onClick={() => void workspace.handleRetry(workspace.selectedId!)}>{workspace.retryingId === workspace.selectedId ? "Retrying..." : "Retry processing"}</button>}
         </div>
       )}
       {workspace.selectedId && workspace.details?.documentId === workspace.selectedId && workspace.details.status === "completed" && (

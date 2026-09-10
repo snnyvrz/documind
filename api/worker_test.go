@@ -161,6 +161,15 @@ func TestProcessorErrorClassification(t *testing.T) {
 	}
 }
 
+func TestPermanentFailureCannotBeRetried(t *testing.T) {
+	message := "OCR is required"
+	store := &memoryDocumentStore{documents: []document{{ID: "document-id", OwnerID: "owner", Status: "failed", ErrorMessage: &message, FailureKind: failureKindPermanent}}}
+
+	if err := store.RetryOwned(context.Background(), "owner", "document-id"); !errors.Is(err, errPermanentFailure) {
+		t.Fatalf("retry permanent failure error = %v, want %v", err, errPermanentFailure)
+	}
+}
+
 func TestLoadWorkerConfigRejectsInvalidLeaseRenewal(t *testing.T) {
 	t.Setenv("DOCUMENT_JOB_LEASE_DURATION", "10s")
 	t.Setenv("DOCUMENT_JOB_LEASE_RENEWAL", "10s")
