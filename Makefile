@@ -4,7 +4,7 @@ COMPOSE ?= docker compose
 E2E_BASE_URL ?= http://127.0.0.1:8080
 KEEP_STACK ?= 0
 
-.PHONY: help install test test-api test-processor test-frontend test-e2e test-e2e-production test-e2e-production-headed stack-up stack-down rag-eval migrate
+.PHONY: help install test test-api test-processor test-frontend test-e2e test-e2e-production test-e2e-production-headed stack-up stack-down rag-eval rag-eval-report migrate
 
 help:
 	@printf '%s\n' \
@@ -65,4 +65,8 @@ test-e2e-production-headed:
 	cd frontend && E2E_BASE_URL=$(E2E_BASE_URL) AUTH_MODE=development AUTH_COOKIE_SECURE=false AUTH_REQUIRE_HTTPS=false bun run test:e2e:production -- --headed
 
 rag-eval:
-	python scripts/run_rag_eval.py --base-url http://127.0.0.1:1323 --dataset evals/rag_questions.jsonl --documents evals/documents --output evals/results/local.json
+	python scripts/run_rag_eval.py --base-url http://127.0.0.1:1323 --dataset evals/rag_questions.jsonl --documents evals/documents --config evals/rag_eval_config.json --output evals/results/local.json
+
+rag-eval-report:
+	python scripts/summarize_rag_eval.py evals/results/local.json --output evals/results/local.summary.json
+	python scripts/publish_rag_report.py evals/results/local.json --output evals/results/local.md

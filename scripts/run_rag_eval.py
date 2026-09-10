@@ -84,6 +84,7 @@ def main() -> None:
     parser.add_argument("--email", default=os.environ.get("DOCUMIND_EVAL_EMAIL"))
     parser.add_argument("--password", default=os.environ.get("DOCUMIND_EVAL_PASSWORD"))
     parser.add_argument("--register", action="store_true")
+    parser.add_argument("--config", type=Path, default=Path("evals/rag_eval_config.json"))
     args = parser.parse_args()
     records = [json.loads(line) for line in args.dataset.read_text().splitlines() if line.strip()]
     client = EvaluationClient(args.base_url)
@@ -104,9 +105,10 @@ def main() -> None:
         if status.get("status") != "completed":
             raise RuntimeError(f"document {document_id} ended with status {status.get('status')}: {status.get('error', '')}")
         result = client.ask(document_id, record["question"])
-        result.update({"id": record["id"], "answerable": record["answerable"], "referenceAnswer": record["reference_answer"], "goldPages": [page for passage in record["supporting_passages"] for page in range(passage["page_start"], passage["page_end"] + 1)]})
+        result.update({"id": record["id"], "answerable": record["answerable"], "referenceAnswer": record["reference_answer"], "goldPassages": record.get("supporting_passages", []), "goldClaims": record.get("gold_claims", []), "goldPages": [page for passage in record.get("supporting_passages", []) for page in range(passage["page_start"], passage["page_end"] + 1)]})
         results.append(result)
-    output = {"gitRevision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), "questionCount": len(records), "results": results}
+    configuration = json.loads(args.config.read_text()) if args.config.exists() else {}
+    output = {"gitRevision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(), "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "dataset": str(args.dataset), "configuration": configuration, "questionCount": len(records), "results": results}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(output, indent=2) + "\n")
 

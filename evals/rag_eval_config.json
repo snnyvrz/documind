@@ -1,0 +1,11 @@
+{
+  "datasetVersion": "starter-v2",
+  "embeddingModel": "nomic-embed-text",
+  "answerModel": "qwen2.5:7b",
+  "judgeModel": null,
+  "retrievalK": 5,
+  "passageMatchThreshold": 0.5,
+  "generationTemperature": 0,
+  "chunking": "API deployment configuration",
+  "scoringVersion": "1.0"
+}
