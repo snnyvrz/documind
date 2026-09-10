@@ -1,6 +1,7 @@
 from concurrent import futures
 from io import BytesIO
 import multiprocessing
+import re
 import resource
 from threading import Event, Semaphore
 from typing import Any, Callable, Iterator
@@ -133,41 +134,44 @@ def extract_pages(pdf: bytes) -> list[str]:
 
 def chunks(text: str, page_ranges: list[tuple[int, int, int]] | None = None) -> list[tuple[str, int, int, int, int]]:
     result = []
-    paragraphs = [(match.start(), match.group()) for match in __import__("re").finditer(r"\S(?:.*?\S)?(?=\n\s*\n|$)", text, __import__("re").DOTALL)]
-    units: list[tuple[int, str]] = []
-    for offset, paragraph in paragraphs:
-        words = paragraph.split()
+    paragraphs = list(re.finditer(r"\S(?:.*?\S)?(?=\n\s*\n|$)", text, re.DOTALL))
+    units: list[tuple[int, int, str]] = []
+    for paragraph_match in paragraphs:
+        paragraph = paragraph_match.group()
+        words = list(re.finditer(r"\S+", paragraph))
         if len(words) <= TOKEN_CHUNK_SIZE:
-            units.append((offset, paragraph))
+            units.append((paragraph_match.start(), paragraph_match.end(), paragraph))
             continue
         for start in range(0, len(words), TOKEN_CHUNK_SIZE - TOKEN_CHUNK_OVERLAP):
-            value = " ".join(words[start:start + TOKEN_CHUNK_SIZE])
-            position = text.find(value.split()[0], offset)
-            units.append((position if position >= 0 else offset, value))
+            window = words[start:start + TOKEN_CHUNK_SIZE]
+            value = " ".join(match.group() for match in window)
+            units.append((paragraph_match.start() + window[0].start(), paragraph_match.start() + window[-1].end(), value))
             if start + TOKEN_CHUNK_SIZE >= len(words):
                 break
     current_start: int | None = None
+    current_end: int | None = None
     current_parts: list[str] = []
     current_tokens = 0
-    for offset, value in units:
+    for offset, end, value in units:
         tokens = len(value.split())
         if current_parts and current_tokens + tokens > TOKEN_CHUNK_SIZE:
             chunk = "\n\n".join(current_parts)
-            assert current_start is not None
-            value_end = current_start + len(chunk)
+            assert current_start is not None and current_end is not None
+            value_end = current_end
             covered = [page for start_offset, end_offset, page in page_ranges or [] if start_offset < value_end and end_offset > current_start]
             result.append((chunk, current_start, value_end, min(covered or [1]), max(covered or [1])))
             if len(result) >= MAX_CHUNKS:
                 raise ValueError("PDF exceeds the maximum chunk count")
-            current_start, current_parts, current_tokens = offset, [], 0
+            current_start, current_end, current_parts, current_tokens = offset, end, [], 0
         if current_start is None:
             current_start = offset
+        current_end = end
         current_parts.append(value)
         current_tokens += tokens
     if current_parts:
         chunk = "\n\n".join(current_parts)
-        assert current_start is not None
-        value_end = current_start + len(chunk)
+        assert current_start is not None and current_end is not None
+        value_end = current_end
         covered = [page for start_offset, end_offset, page in page_ranges or [] if start_offset < value_end and end_offset > current_start]
         result.append((chunk, current_start, value_end, min(covered or [1]), max(covered or [1])))
     return result

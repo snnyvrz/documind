@@ -4,6 +4,11 @@ The document processor extracts PDF text, chunks it, and streams Ollama
 embeddings over gRPC on port `50051`. Its FastAPI health endpoint is on port
 `8000`.
 
+Chunk offsets are absolute spans in the normalized extracted document text.
+Long-paragraph splitting preserves each token's original span, including when
+words repeat or whitespace varies. Page ranges are calculated by intersecting
+those chunk spans with the extracted page spans.
+
 ## Development
 
 Install locked dependencies and run the service with `uv`:

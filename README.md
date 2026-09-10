@@ -489,6 +489,12 @@ The main API environment variables are:
 | `EMBEDDING_BATCH_SIZE` | Chunks embedded per streamed batch | `32` |
 | `RETRIEVAL_LIMIT` | Number of nearest chunks supplied to answer generation | `5` |
 
+Chunk `start_offset` and `end_offset` values refer to the original spans in the
+processor's normalized extracted document text. Long paragraphs are split using
+the absolute spans of their tokens, so repeated words and irregular whitespace
+do not cause offsets to point to an earlier occurrence. Chunk page ranges are
+calculated from those same spans.
+
 Quota reservations are crash-safe. Document metadata and upload quota commitment
 are atomic in one database transaction. On API startup, expired upload and answer
 reservations are reclaimed in a transaction and per-owner usage counters are

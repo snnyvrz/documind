@@ -69,6 +69,37 @@ def test_chunks_preserve_page_ranges() -> None:
     assert values[0][3:] == (1, 2)
 
 
+def test_chunks_preserve_spans_for_repeated_words() -> None:
+    text = "word " * 7 + "word"
+
+    with patch("service.TOKEN_CHUNK_SIZE", 4), patch("service.TOKEN_CHUNK_OVERLAP", 1):
+        values = chunks(text)
+
+    assert [(value, start, end) for value, start, end, _, _ in values] == [
+        ("word word word word", 0, 19),
+        ("word word word word", 15, 34),
+        ("word word", 30, 39),
+    ]
+
+
+def test_chunks_use_original_spans_with_irregular_whitespace() -> None:
+    text = "one  two\n\tthree    four"
+
+    values = chunks(text)
+
+    assert values == [("one  two\n\tthree    four", 0, len(text), 1, 1)]
+
+
+def test_chunks_page_ranges_use_original_chunk_span() -> None:
+    text = "one two three four five six"
+
+    with patch("service.TOKEN_CHUNK_SIZE", 4), patch("service.TOKEN_CHUNK_OVERLAP", 0):
+        values = chunks(text, [(0, 13, 1), (13, len(text), 2)])
+
+    assert values[0][1:5] == (0, 18, 1, 2)
+    assert values[1][1:5] == (19, len(text), 2, 2)
+
+
 def test_process_rejects_documents_without_extractable_text() -> None:
     page = Mock()
     page.extract_text.return_value = ""
