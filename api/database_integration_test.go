@@ -297,11 +297,12 @@ func TestPostgresUploadMetadataAndQuotaCommitRollbackTogether(t *testing.T) {
 	if err := store.CreateOwnedAndCommitUpload(context.Background(), owner, duplicate, failedReservationID); err == nil {
 		t.Fatal("duplicate document upload commit succeeded")
 	}
-	if err := store.database.First(&reservation, "id = ?", failedReservationID).Error; err != nil {
+	var rolledBackReservation uploadReservation
+	if err := store.database.First(&rolledBackReservation, "id = ?", failedReservationID).Error; err != nil {
 		t.Fatalf("load rolled-back reservation: %v", err)
 	}
-	if reservation.State != "reserved" {
-		t.Fatalf("rolled-back reservation state = %q, want reserved", reservation.State)
+	if rolledBackReservation.State != "reserved" {
+		t.Fatalf("rolled-back reservation state = %q, want reserved", rolledBackReservation.State)
 	}
 	if err := store.database.First(&usage, "owner_id = ?", owner).Error; err != nil {
 		t.Fatalf("reload rolled-back usage: %v", err)
