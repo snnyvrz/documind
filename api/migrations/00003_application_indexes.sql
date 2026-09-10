@@ -1,4 +1,5 @@
 -- +goose Up
+-- +goose StatementBegin
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'documents' AND column_name = 'owner_id') THEN
@@ -18,6 +19,7 @@ BEGIN
         ALTER TABLE documents ALTER COLUMN owner_id SET NOT NULL;
     END IF;
 END $$;
+-- +goose StatementEnd
 CREATE INDEX IF NOT EXISTS idx_documents_queued_jobs ON documents(next_attempt_at, created_at, id) WHERE status = 'queued';
 CREATE INDEX IF NOT EXISTS idx_documents_owner_created_id ON documents(owner_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_documents_expired_leases ON documents(lease_expires_at, created_at, id) WHERE status = 'processing';
