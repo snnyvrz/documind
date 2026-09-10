@@ -142,6 +142,88 @@ func TestPostgresConcurrentUploadReservationsRespectStorageQuota(t *testing.T) {
 	}
 }
 
+func TestPostgresStartupRecoveryReclaimsExpiredReservationsAndReconcilesUsage(t *testing.T) {
+	store := integrationStore(t)
+	owner := "recovery-owner-" + time.Now().UTC().Format("150405.000000000")
+	defer store.database.Exec("DELETE FROM answer_reservations WHERE owner_id = ?", owner)
+	defer store.database.Exec("DELETE FROM upload_reservations WHERE owner_id = ?", owner)
+	defer store.database.Exec("DELETE FROM documents WHERE owner_id = ?", owner)
+	defer store.database.Exec("DELETE FROM db_owner_usages WHERE owner_id = ?", owner)
+
+	now := time.Now().UTC()
+	if err := store.database.Create(&dbOwnerUsage{OwnerID: owner, CommittedBytes: 999, CommittedDocuments: 99, ReservedBytes: 999, ReservedDocuments: 99, ActiveAnswers: 2}).Error; err != nil {
+		t.Fatalf("create usage: %v", err)
+	}
+	document := document{ID: mustIntegrationID(t), OwnerID: owner, Size: 17, Status: "completed", CreatedAt: now, UpdatedAt: now}
+	if err := store.database.Create(&document).Error; err != nil {
+		t.Fatalf("create document: %v", err)
+	}
+	if err := store.database.Create(&uploadReservation{ID: mustIntegrationID(t), OwnerID: owner, DocumentID: mustIntegrationID(t), Bytes: 23, State: "reserved", ExpiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
+		t.Fatalf("create upload reservation: %v", err)
+	}
+	for index := 0; index < 2; index++ {
+		if err := store.database.Create(&answerReservation{ID: mustIntegrationID(t), OwnerID: owner, RequestID: mustIntegrationID(t), State: "active", ExpiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
+			t.Fatalf("create answer reservation: %v", err)
+		}
+	}
+
+	if err := store.RecoverExpiredReservations(context.Background()); err != nil {
+		t.Fatalf("recover reservations: %v", err)
+	}
+	if err := store.RecoverExpiredReservations(context.Background()); err != nil {
+		t.Fatalf("repeat recovery: %v", err)
+	}
+
+	var usage dbOwnerUsage
+	if err := store.database.First(&usage, "owner_id = ?", owner).Error; err != nil {
+		t.Fatalf("load reconciled usage: %v", err)
+	}
+	if usage.CommittedBytes != 17 || usage.CommittedDocuments != 1 || usage.ReservedBytes != 0 || usage.ReservedDocuments != 0 || usage.ActiveAnswers != 0 {
+		t.Fatalf("reconciled usage = %+v", usage)
+	}
+	var released int64
+	if err := store.database.Model(&uploadReservation{}).Where("owner_id = ? AND state = 'released'", owner).Count(&released).Error; err != nil || released != 1 {
+		t.Fatalf("released uploads = %d, err = %v", released, err)
+	}
+	var expired int64
+	if err := store.database.Model(&answerReservation{}).Where("owner_id = ? AND state = 'expired'", owner).Count(&expired).Error; err != nil || expired != 2 {
+		t.Fatalf("expired answers = %d, err = %v", expired, err)
+	}
+}
+
+func TestPostgresAdmissionRecoveryReclaimsExpiredReservationsBeforeQuotaCheck(t *testing.T) {
+	store := integrationStore(t)
+	owner := "admission-recovery-owner-" + time.Now().UTC().Format("150405.000000000")
+	defer store.database.Exec("DELETE FROM answer_reservations WHERE owner_id = ?", owner)
+	defer store.database.Exec("DELETE FROM upload_reservations WHERE owner_id = ?", owner)
+	defer store.database.Exec("DELETE FROM db_owner_usages WHERE owner_id = ?", owner)
+
+	now := time.Now().UTC()
+	uploadID := mustIntegrationID(t)
+	uploadDocumentID := mustIntegrationID(t)
+	if err := store.database.Create(&dbOwnerUsage{OwnerID: owner, ReservedBytes: maxOwnerStorage, ReservedDocuments: maxOwnerDocuments, ActiveAnswers: maxActiveAnswers}).Error; err != nil {
+		t.Fatalf("create usage: %v", err)
+	}
+	if err := store.database.Create(&uploadReservation{ID: uploadID, OwnerID: owner, DocumentID: uploadDocumentID, Bytes: maxOwnerStorage, State: "reserved", ExpiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
+		t.Fatalf("create upload reservation: %v", err)
+	}
+	for index := 0; index < maxActiveAnswers; index++ {
+		answerID := mustIntegrationID(t)
+		if err := store.database.Create(&answerReservation{ID: answerID, OwnerID: owner, RequestID: answerID, State: "active", ExpiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Hour)}).Error; err != nil {
+			t.Fatalf("create answer reservation: %v", err)
+		}
+	}
+
+	newUploadID := mustIntegrationID(t)
+	newDocumentID := mustIntegrationID(t)
+	if err := store.ReserveUpload(context.Background(), owner, newUploadID, newDocumentID, 1, now.Add(time.Hour)); err != nil {
+		t.Fatalf("reserve upload after recovery: %v", err)
+	}
+	if err := store.BeginAnswer(context.Background(), owner, mustIntegrationID(t), now.Add(time.Hour)); err != nil {
+		t.Fatalf("begin answer after recovery: %v", err)
+	}
+}
+
 func TestPostgresRateLimitIsSharedAcrossStoreInstances(t *testing.T) {
 	first := integrationStore(t)
 	second := integrationStore(t)

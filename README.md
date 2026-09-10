@@ -479,6 +479,13 @@ The main API environment variables are:
 | `EMBEDDING_BATCH_SIZE` | Chunks embedded per streamed batch | `32` |
 | `RETRIEVAL_LIMIT` | Number of nearest chunks supplied to answer generation | `5` |
 
+Quota reservations are crash-safe. On API startup, expired upload and answer
+reservations are reclaimed in a transaction and per-owner usage counters are
+reconciled from documents and reservation rows. The same owner-scoped recovery
+runs transactionally before upload and answer quota admission, so expired
+reservations do not block an account while the API remains running. No extra
+configuration is required.
+
 The `/metrics` endpoint exposes Prometheus text metrics for accepted and rejected
 uploads, terminal document-processing failures, answer successes and failures,
 answer-latency histogram buckets/sum/count, current queued-job depth, and the

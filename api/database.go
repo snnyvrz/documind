@@ -234,6 +234,9 @@ SELECT owner_id, COALESCE(SUM(size), 0), COUNT(*), NOW() FROM documents GROUP BY
 ON CONFLICT (owner_id) DO NOTHING`).Error; err != nil {
 		return err
 	}
+	if err := s.RecoverExpiredReservations(context.Background()); err != nil {
+		return err
+	}
 	return s.database.Exec(`CREATE INDEX IF NOT EXISTS idx_documents_expired_leases
 ON documents (lease_expires_at, created_at, id) WHERE status = 'processing'`).Error
 }
@@ -295,6 +298,12 @@ func (s *postgresDocumentStore) ListOwnedPage(ctx context.Context, ownerID strin
 
 func (s *postgresDocumentStore) ReserveUpload(ctx context.Context, ownerID, reservationID, documentID string, size int64, expiresAt time.Time) error {
 	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockOwnerUsage(tx, ownerID); err != nil {
+			return err
+		}
+		if err := recoverExpiredReservations(tx, &ownerID, time.Now().UTC()); err != nil {
+			return err
+		}
 		usage := dbOwnerUsage{OwnerID: ownerID}
 		if err := tx.Where("owner_id = ?", ownerID).FirstOrCreate(&usage).Error; err != nil {
 			return err
@@ -352,6 +361,12 @@ func (s *postgresDocumentStore) ReleaseUpload(ctx context.Context, reservationID
 
 func (s *postgresDocumentStore) BeginAnswer(ctx context.Context, ownerID, requestID string, expiresAt time.Time) error {
 	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockOwnerUsage(tx, ownerID); err != nil {
+			return err
+		}
+		if err := recoverExpiredReservations(tx, &ownerID, time.Now().UTC()); err != nil {
+			return err
+		}
 		usage := dbOwnerUsage{OwnerID: ownerID}
 		if err := tx.Where("owner_id = ?", ownerID).FirstOrCreate(&usage).Error; err != nil {
 			return err
@@ -367,6 +382,98 @@ func (s *postgresDocumentStore) BeginAnswer(ctx context.Context, ownerID, reques
 		}
 		return tx.Create(&answerReservation{ID: requestID, OwnerID: ownerID, RequestID: requestID, State: "active", ExpiresAt: expiresAt, CreatedAt: time.Now().UTC()}).Error
 	})
+}
+
+func lockOwnerUsage(tx *gorm.DB, ownerID string) error {
+	usage := dbOwnerUsage{OwnerID: ownerID}
+	if err := tx.Where("owner_id = ?", ownerID).FirstOrCreate(&usage).Error; err != nil {
+		return err
+	}
+	return tx.Raw("SELECT * FROM db_owner_usages WHERE owner_id = ? FOR UPDATE", ownerID).Scan(&usage).Error
+}
+
+func (s *postgresDocumentStore) RecoverExpiredReservations(ctx context.Context) error {
+	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return recoverExpiredReservations(tx, nil, time.Now().UTC())
+	})
+}
+
+func recoverExpiredReservations(tx *gorm.DB, ownerID *string, now time.Time) error {
+	ownerFilter := ""
+	if ownerID != nil {
+		ownerFilter = " AND owner_id = ?"
+	}
+	uploadArgs := []any{now, now}
+	if ownerID != nil {
+		uploadArgs = append(uploadArgs, *ownerID)
+	}
+	if err := tx.Exec("UPDATE upload_reservations SET state = 'released', released_at = ? WHERE state = 'reserved' AND expires_at <= ?"+ownerFilter, uploadArgs...).Error; err != nil {
+		return err
+	}
+	answerArgs := []any{now, now}
+	if ownerID != nil {
+		answerArgs = append(answerArgs, *ownerID)
+	}
+	if err := tx.Exec("UPDATE answer_reservations SET state = 'expired', finished_at = ? WHERE state = 'active' AND expires_at <= ?"+ownerFilter, answerArgs...).Error; err != nil {
+		return err
+	}
+
+	where := ""
+	whereArgs := []any{}
+	if ownerID != nil {
+		where = " WHERE owner_id = ?"
+		whereArgs = append(whereArgs, *ownerID)
+	}
+	query := `WITH owners AS (
+    SELECT owner_id FROM db_owner_usages` + where + `
+    UNION SELECT owner_id FROM documents` + where + `
+    UNION SELECT owner_id FROM upload_reservations` + where + `
+    UNION SELECT owner_id FROM answer_reservations` + where + `
+), committed AS (
+    SELECT owner_id, COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS documents
+    FROM documents` + where + ` GROUP BY owner_id
+), reserved AS (
+    SELECT owner_id, COALESCE(SUM(bytes), 0) AS bytes, COUNT(*) AS documents
+    FROM upload_reservations WHERE state = 'reserved'` + func() string {
+		if ownerID == nil {
+			return ""
+		}
+		return " AND owner_id = ?"
+	}() + ` GROUP BY owner_id
+), active AS (
+    SELECT owner_id, COUNT(*) AS answers
+    FROM answer_reservations WHERE state = 'active'` + func() string {
+		if ownerID == nil {
+			return ""
+		}
+		return " AND owner_id = ?"
+	}() + ` GROUP BY owner_id
+)
+INSERT INTO db_owner_usages (owner_id, committed_bytes, committed_documents, reserved_bytes, reserved_documents, active_answers, updated_at)
+SELECT owners.owner_id,
+       COALESCE(committed.bytes, 0), COALESCE(committed.documents, 0),
+       COALESCE(reserved.bytes, 0), COALESCE(reserved.documents, 0),
+       COALESCE(active.answers, 0), ?
+FROM owners
+LEFT JOIN committed ON committed.owner_id = owners.owner_id
+LEFT JOIN reserved ON reserved.owner_id = owners.owner_id
+LEFT JOIN active ON active.owner_id = owners.owner_id
+ON CONFLICT (owner_id) DO UPDATE SET
+    committed_bytes = EXCLUDED.committed_bytes,
+    committed_documents = EXCLUDED.committed_documents,
+    reserved_bytes = EXCLUDED.reserved_bytes,
+    reserved_documents = EXCLUDED.reserved_documents,
+    active_answers = EXCLUDED.active_answers,
+    updated_at = EXCLUDED.updated_at`
+	args := make([]any, 0, len(whereArgs)*7+1)
+	for range 5 {
+		args = append(args, whereArgs...)
+	}
+	if ownerID != nil {
+		args = append(args, *ownerID, *ownerID)
+	}
+	args = append(args, now)
+	return tx.Exec(query, args...).Error
 }
 
 func (s *postgresDocumentStore) EndAnswer(ctx context.Context, reservationID, state string) error {

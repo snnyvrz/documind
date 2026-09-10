@@ -4,7 +4,7 @@ DocuMind: a PDF-document upload and embedding service. The repo contains indepen
 
 ## Layout
 
-- `api/` — Go 1.26 backend. Module name is `api` (not a host path). HTTP server on `:1323` using **labstack/echo v5** (note: context params are `*echo.Context`, not v4's value type), GORM + PostgreSQL, and a background worker that calls the processor over gRPC.
+- `api/` — Go 1.26 backend. Module name is `api` (not a host path). HTTP server on `:1323` using **labstack/echo v5** (note: context params are `*echo.Context`, not v4's value type), GORM + PostgreSQL, and a background worker that calls the processor over gRPC. Startup reclaims expired quota reservations and reconciles usage counters.
 - `document-processor/` — Python 3.14 `uv` project. FastAPI health server on `:8000`, gRPC processor on `:50051`, isolated resource-limited PDF extraction, paragraph/token-aware chunking, and Ollama embedding/chat integration. Scanned PDFs without extractable text are rejected because OCR is not enabled.
 - `frontend/` — React 19 + Vite 8 + Tailwind v4 + shadcn/ui. **Bun** is the package manager (`bun.lock` committed; never add a `package-lock.json`). Path alias `@/*` → `src/*`. React Compiler is enabled via `@rolldown/plugin-babel` + `reactCompilerPreset` in `vite.config.ts`. Document polling and answer SSE streaming live in cancellation-aware hooks; the current UI displays the generated answer without rendering extracted text, chunks, or source citations.
 - `proto/` — shared protobuf contract; generated bindings are committed under `api/proto/` and `document-processor/generated/`.
@@ -60,4 +60,5 @@ CI-equivalent checks:
 - Deleting a document removes its database chunks and uploaded `documents/<id>/` directory.
 - The RAG evaluator requires login or registration credentials, preserves the authentication cookie, rejects failed document processing, and requires a successful SSE `done` event with `ok: true`.
 - API metrics are shared by the HTTP handler and worker. They count accepted/rejected uploads, terminal processing failures, and answer outcomes; answer latency is a Prometheus histogram; queue depth and oldest queued age are refreshed from database state.
+- Durable upload and answer quota admission performs owner-scoped expired-reservation recovery in the same transaction. Startup performs the all-owner recovery; usage counters are rebuilt from documents and reservation rows, making recovery idempotent and safe after crashes.
 - `data/`, `api/.env`, and `api/tmp/` are gitignored working-state (uploads, local env, air build artifacts).
