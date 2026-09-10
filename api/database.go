@@ -305,10 +305,7 @@ func (s *postgresDocumentStore) ReserveUpload(ctx context.Context, ownerID, rese
 			return err
 		}
 		usage := dbOwnerUsage{OwnerID: ownerID}
-		if err := tx.Where("owner_id = ?", ownerID).FirstOrCreate(&usage).Error; err != nil {
-			return err
-		}
-		if err := tx.Raw("SELECT * FROM db_owner_usages WHERE owner_id = ? FOR UPDATE", ownerID).Scan(&usage).Error; err != nil {
+		if err := tx.Raw("SELECT * FROM db_owner_usages WHERE owner_id = ?", ownerID).Scan(&usage).Error; err != nil {
 			return err
 		}
 		if usage.CommittedBytes+usage.ReservedBytes+size > maxOwnerStorage || usage.CommittedDocuments+usage.ReservedDocuments+1 > maxOwnerDocuments {
@@ -368,10 +365,7 @@ func (s *postgresDocumentStore) BeginAnswer(ctx context.Context, ownerID, reques
 			return err
 		}
 		usage := dbOwnerUsage{OwnerID: ownerID}
-		if err := tx.Where("owner_id = ?", ownerID).FirstOrCreate(&usage).Error; err != nil {
-			return err
-		}
-		if err := tx.Raw("SELECT * FROM db_owner_usages WHERE owner_id = ? FOR UPDATE", ownerID).Scan(&usage).Error; err != nil {
+		if err := tx.Raw("SELECT * FROM db_owner_usages WHERE owner_id = ?", ownerID).Scan(&usage).Error; err != nil {
 			return err
 		}
 		if usage.ActiveAnswers >= maxActiveAnswers {
@@ -385,10 +379,12 @@ func (s *postgresDocumentStore) BeginAnswer(ctx context.Context, ownerID, reques
 }
 
 func lockOwnerUsage(tx *gorm.DB, ownerID string) error {
-	usage := dbOwnerUsage{OwnerID: ownerID}
-	if err := tx.Where("owner_id = ?", ownerID).FirstOrCreate(&usage).Error; err != nil {
+	if err := tx.Exec(`INSERT INTO db_owner_usages (owner_id, updated_at)
+VALUES (?, ?)
+ON CONFLICT (owner_id) DO NOTHING`, ownerID, time.Now().UTC()).Error; err != nil {
 		return err
 	}
+	var usage dbOwnerUsage
 	return tx.Raw("SELECT * FROM db_owner_usages WHERE owner_id = ? FOR UPDATE", ownerID).Scan(&usage).Error
 }
 

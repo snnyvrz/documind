@@ -142,6 +142,36 @@ func TestPostgresConcurrentUploadReservationsRespectStorageQuota(t *testing.T) {
 	}
 }
 
+func TestPostgresConcurrentAnswerReservationsForNewOwnerRespectActiveQuota(t *testing.T) {
+	store := integrationStore(t)
+	owner := "answer-quota-owner-" + time.Now().UTC().Format("150405.000000000")
+	defer store.database.Exec("DELETE FROM answer_reservations WHERE owner_id = ?", owner)
+	defer store.database.Exec("DELETE FROM db_owner_usages WHERE owner_id = ?", owner)
+
+	const attempts = maxActiveAnswers + 2
+	results := make(chan error, attempts)
+	start := make(chan struct{})
+	for index := 0; index < attempts; index++ {
+		go func(index int) {
+			<-start
+			requestID := mustIntegrationID(t)
+			results <- store.BeginAnswer(context.Background(), owner, requestID, time.Now().UTC().Add(time.Hour))
+		}(index)
+	}
+	close(start)
+	accepted := 0
+	for index := 0; index < attempts; index++ {
+		if err := <-results; err == nil {
+			accepted++
+		} else if !errors.Is(err, errQuotaExceeded) {
+			t.Fatalf("answer reservation error = %v", err)
+		}
+	}
+	if accepted != maxActiveAnswers {
+		t.Fatalf("accepted answer reservations = %d, want %d", accepted, maxActiveAnswers)
+	}
+}
+
 func TestPostgresStartupRecoveryReclaimsExpiredReservationsAndReconcilesUsage(t *testing.T) {
 	store := integrationStore(t)
 	owner := "recovery-owner-" + time.Now().UTC().Format("150405.000000000")
