@@ -10,14 +10,21 @@ export function useDocumentWorkspace() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [nextCursor, setNextCursor] = useState<string | undefined>();
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [history, setHistory] = useState<QuestionHistoryItem[]>([]);
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const { details, error: processingError, detailsById } = useDocumentProcessing(documents, selectedId);
 
   useEffect(() => {
     const controller = new AbortController();
-    void listDocuments(controller.signal)
-      .then((response) => setDocuments(response.items))
+    void listDocuments({ search: search.trim(), signal: controller.signal })
+      .then((response) => {
+        setDocuments(response.items);
+        setNextCursor(response.nextCursor);
+        setHasMore(response.hasMore);
+      })
       .catch((error) => {
         if (!controller.signal.aborted) {
           setMessage({
@@ -27,7 +34,30 @@ export function useDocumentWorkspace() {
         }
       });
     return () => controller.abort();
-  }, []);
+  }, [search]);
+
+  const loadMoreDocuments = async () => {
+    if (!hasMore || !nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const response = await listDocuments({ search: search.trim(), cursor: nextCursor });
+      setDocuments((current) => [...current, ...response.items]);
+      setNextCursor(response.nextCursor);
+      setHasMore(response.hasMore);
+    } catch (error) {
+      setMessage({ type: "error", text: error instanceof Error ? error.message : "Could not load more documents." });
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  const updateSearch = (value: string) => {
+    // A new query starts a new result set; do not append pages from the prior query.
+    setDocuments([]);
+    setNextCursor(undefined);
+    setHasMore(false);
+    setSearch(value);
+  };
 
   useEffect(() => {
     if (!Object.keys(detailsById).length) return;
@@ -98,9 +128,8 @@ export function useDocumentWorkspace() {
 
   return {
     documents,
-    filteredDocuments: documents.filter((document) => document.filename.toLowerCase().includes(search.toLowerCase().trim())),
     search,
-    setSearch,
+    setSearch: updateSearch,
     selectedId,
     details,
     processingError,
@@ -117,5 +146,8 @@ export function useDocumentWorkspace() {
     setHistory,
     retryingId,
     handleRetry,
+    hasMore,
+    loadingMore,
+    loadMoreDocuments,
   };
 }

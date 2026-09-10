@@ -20,6 +20,9 @@ export const DocumentUploadForm = () => {
         onSearch={workspace.setSearch}
         onRetry={workspace.handleRetry}
         retryingId={workspace.retryingId}
+        hasMore={workspace.hasMore}
+        loadingMore={workspace.loadingMore}
+        onLoadMore={() => void workspace.loadMoreDocuments()}
       />
       <DocumentUploader
         onUploaded={workspace.handleUploaded}

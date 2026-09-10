@@ -1,11 +1,15 @@
 import { apiFetch } from "@/lib/api";
 import type { DocumentDetails, DocumentListResponse, QuestionHistoryItem } from "@/documents/document-types";
 
-export async function listDocuments(signal?: AbortSignal) {
-  const response = await apiFetch("/documents", { signal });
+export async function listDocuments(options: { search?: string; cursor?: string; signal?: AbortSignal } = {}) {
+  const params = new URLSearchParams();
+  if (options.search) params.set("search", options.search);
+  if (options.cursor) params.set("cursor", options.cursor);
+  const query = params.toString();
+  const response = await apiFetch(`/documents${query ? `?${query}` : ""}`, { signal: options.signal });
   if (!response.ok) throw new Error("Could not load documents.");
   const body = await response.json();
-  if (Array.isArray(body)) return { items: body, hasMore: false } satisfies DocumentListResponse;
+  if (Array.isArray(body)) return { items: body, hasMore: false } as DocumentListResponse;
   return body as DocumentListResponse;
 }
 

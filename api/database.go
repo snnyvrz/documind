@@ -321,8 +321,11 @@ func (s *postgresDocumentStore) ListOwned(ctx context.Context, ownerID string) (
 	return result, err
 }
 
-func (s *postgresDocumentStore) ListOwnedPage(ctx context.Context, ownerID string, limit int, cursor *documentCursor) ([]documentSummaryRow, error) {
+func (s *postgresDocumentStore) ListOwnedPage(ctx context.Context, ownerID, search string, limit int, cursor *documentCursor) ([]documentSummaryRow, error) {
 	query := s.database.WithContext(ctx).Model(&document{}).Select("id, original_filename, status, page_count, error_message, created_at, updated_at").Where("owner_id = ?", ownerID)
+	if search != "" {
+		query = query.Where("original_filename ILIKE ?", "%"+search+"%")
+	}
 	if cursor != nil {
 		query = query.Where("(created_at, id) < (?, ?)", cursor.CreatedAt, cursor.ID)
 	}

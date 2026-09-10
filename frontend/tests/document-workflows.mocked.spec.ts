@@ -9,6 +9,33 @@ test.describe("mocked API document workflows", () => {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ subject: "test-user", email: "test@example.com" }) });
     });
   });
+
+  test("loads more documents and searches on the server", async ({ page }) => {
+    const requests: string[] = [];
+    await page.route(/\/documents(?:\?.*)?$/, async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      const url = new URL(route.request().url());
+      requests.push(url.search);
+      if (url.searchParams.get("cursor")) {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [{ documentId: "older", filename: "older-report.pdf", status: "completed", createdAt: new Date().toISOString() }], hasMore: false }) });
+        return;
+      }
+      if (url.searchParams.get("search")) {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [{ documentId: "match", filename: "matching-report.pdf", status: "completed", createdAt: new Date().toISOString() }], hasMore: false }) });
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [{ documentId: "newer", filename: "newer-report.pdf", status: "completed", createdAt: new Date().toISOString() }], nextCursor: "older-page", hasMore: true }) });
+    });
+
+    await page.goto("/");
+    await expect(page.getByText("newer-report.pdf")).toBeVisible();
+    await page.getByRole("button", { name: "Load more" }).click();
+    await expect(page.getByText("older-report.pdf")).toBeVisible();
+    await page.getByLabel("Search documents").fill("matching");
+    await expect(page.getByText("matching-report.pdf")).toBeVisible();
+    await expect(page.getByText("newer-report.pdf")).not.toBeVisible();
+    expect(requests.some((query) => query.includes("search=matching"))).toBe(true);
+  });
   test("selects and removes a PDF", async ({ page }) => {
     await page.goto("/");
 

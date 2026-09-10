@@ -163,6 +163,7 @@ func (h *documentHandler) Upload(c *echo.Context) error {
 }
 
 func (h *documentHandler) List(c *echo.Context) error {
+	search := strings.TrimSpace(c.QueryParam("search"))
 	limit := 50
 	if value, err := strconv.Atoi(c.QueryParam("limit")); err == nil && value > 0 {
 		if value > 100 {
@@ -186,9 +187,9 @@ func (h *documentHandler) List(c *echo.Context) error {
 		cursor = &documentCursor{CreatedAt: payload.CreatedAt, ID: payload.ID}
 	}
 	if paged, ok := h.store.(interface {
-		ListOwnedPage(context.Context, string, int, *documentCursor) ([]documentSummaryRow, error)
+		ListOwnedPage(context.Context, string, string, int, *documentCursor) ([]documentSummaryRow, error)
 	}); ok {
-		rows, err := paged.ListOwnedPage(c.Request().Context(), principal(c), limit+1, cursor)
+		rows, err := paged.ListOwnedPage(c.Request().Context(), principal(c), search, limit+1, cursor)
 		if err != nil {
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not list documents"})
 		}
@@ -214,9 +215,12 @@ func (h *documentHandler) List(c *echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "could not list documents"})
 	}
-	result := make([]documentSummary, len(documents))
-	for i, document := range documents {
-		result[i] = documentSummary{DocumentID: document.ID, Filename: document.OriginalFilename, Status: document.Status, PageCount: document.PageCount, CreatedAt: document.CreatedAt, UpdatedAt: document.UpdatedAt, Error: document.ErrorMessage}
+	result := make([]documentSummary, 0, len(documents))
+	for _, document := range documents {
+		if search != "" && !strings.Contains(strings.ToLower(document.OriginalFilename), strings.ToLower(search)) {
+			continue
+		}
+		result = append(result, documentSummary{DocumentID: document.ID, Filename: document.OriginalFilename, Status: document.Status, PageCount: document.PageCount, CreatedAt: document.CreatedAt, UpdatedAt: document.UpdatedAt, Error: document.ErrorMessage})
 	}
 	if len(result) > limit {
 		result = result[:limit]

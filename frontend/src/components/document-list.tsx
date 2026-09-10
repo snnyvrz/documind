@@ -12,6 +12,9 @@ type Props = {
   onSearch: (value: string) => void;
   onRetry: (id: string) => void;
   retryingId: string | null;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
 };
 
 export function DocumentList({
@@ -24,6 +27,9 @@ export function DocumentList({
   onSearch,
   onRetry,
   retryingId,
+  hasMore,
+  loadingMore,
+  onLoadMore,
 }: Props) {
   return (
     <section className="flex min-h-0 flex-col gap-4">
@@ -32,7 +38,7 @@ export function DocumentList({
           Documents
         </h2>
         <span className="text-xs text-muted-foreground">
-          {documents.length} total
+          {documents.length} loaded
         </span>
       </div>
       <label className="relative block">
@@ -41,11 +47,11 @@ export function DocumentList({
       </label>
       {documents.length === 0 ? (
         <p className="border border-dashed p-5 text-sm text-muted-foreground">
-          Uploaded documents will appear here.
+          {search.trim() ? "No documents match your search." : "Uploaded documents will appear here."}
         </p>
       ) : (
         <div className="divide-y border">
-          {documents.filter((document) => document.filename.toLowerCase().includes(search.toLowerCase().trim())).map((document) => (
+          {documents.map((document) => (
             <div
               key={document.documentId}
               className={`flex items-center gap-3 p-3 ${selectedId === document.documentId ? "bg-accent" : ""}`}
@@ -92,6 +98,7 @@ export function DocumentList({
               </span>
             </div>
           ))}
+          {hasMore && <div className="p-3"><Button type="button" variant="outline" className="w-full" disabled={loadingMore} onClick={onLoadMore}>{loadingMore ? "Loading..." : "Load more"}</Button></div>}
         </div>
       )}
     </section>
