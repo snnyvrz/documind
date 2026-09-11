@@ -22,9 +22,12 @@ revision, timestamp, and configuration snapshot.
 ## Metrics and Reports
 
 The scorer reports passage precision, recall, F1, reciprocal rank, and nDCG
-using token overlap. Page hit rate and exact match remain compatibility
-diagnostics. The passage matching threshold is stored in
-`evals/rag_eval_config.json`.
+using token overlap. Retrieved and gold passages are matched one-to-one, so
+duplicate or overlapping evidence cannot recover the same gold passage twice.
+Duplicate evidence still occupies its retrieved rank and lowers precision,
+while recall counts distinct gold passages recovered. Page hit rate and exact
+match remain compatibility diagnostics. The passage matching threshold is
+stored in `evals/rag_eval_config.json`.
 
 Run `scripts/judge_rag_eval.py` with a local Ollama model to assess answerable
 responses against gold claims and retrieved passages. Judgments contain

@@ -27,14 +27,55 @@ def passage_similarity(retrieved: str, gold: str) -> float:
     return len(left & right) / len(left | right) if left and right else 0.0
 
 
+def _distinct_passages(passages: list[str]) -> list[str]:
+    """Remove exact passage duplicates while preserving annotation order."""
+    distinct = []
+    seen: set[frozenset[str]] = set()
+    for passage in passages:
+        identity = frozenset(tokens(passage))
+        if identity not in seen:
+            seen.add(identity)
+            distinct.append(passage)
+    return distinct
+
+
+def _matched_passages(retrieved: list[str], gold: list[str], threshold: float) -> dict[int, int]:
+    """Return a deterministic maximum one-to-one retrieved/gold matching."""
+    edges = []
+    seen: set[frozenset[str]] = set()
+    for item in retrieved:
+        identity = frozenset(tokens(item))
+        if identity in seen:
+            edges.append([])
+            continue
+        seen.add(identity)
+        edges.append([index for index, expected in enumerate(gold) if passage_similarity(item, expected) >= threshold])
+    gold_matches: dict[int, int] = {}
+
+    def augment(retrieved_index: int, visited: set[int]) -> bool:
+        for gold_index in edges[retrieved_index]:
+            if gold_index in visited:
+                continue
+            visited.add(gold_index)
+            previous = gold_matches.get(gold_index)
+            if previous is None or augment(previous, visited):
+                gold_matches[gold_index] = retrieved_index
+                return True
+        return False
+
+    for retrieved_index in range(len(retrieved)):
+        augment(retrieved_index, set())
+    return {retrieved_index: gold_index for gold_index, retrieved_index in gold_matches.items()}
+
+
 def passage_metrics(retrieved: Iterable[str], gold: Iterable[str], threshold: float = 0.5) -> dict:
     retrieved = list(retrieved)
-    gold = list(gold)
+    gold = _distinct_passages(list(gold))
     if not gold:
         return {"retrievalPrecision": None, "retrievalRecall": None, "retrievalF1": None, "reciprocalRank": None, "nDCG": None, "matchedPassages": 0}
-    matches = [any(passage_similarity(item, expected) >= threshold for expected in gold) for item in retrieved]
-    relevant_ranks = [index + 1 for index, matched in enumerate(matches) if matched]
-    relevant_count = sum(matches)
+    matches = _matched_passages(retrieved, gold, threshold)
+    relevant_ranks = [index + 1 for index in sorted(matches)]
+    relevant_count = len(matches)
     precision = relevant_count / len(retrieved) if retrieved else 0.0
     recall = relevant_count / len(gold) if gold else None
     f1 = (2 * precision * recall / (precision + recall)) if recall is not None and precision + recall else 0.0
