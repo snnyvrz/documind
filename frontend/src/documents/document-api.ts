@@ -1,6 +1,16 @@
 import { apiFetch } from "@/lib/api";
 import type { DocumentDetails, DocumentListResponse, QuestionHistoryItem } from "@/documents/document-types";
 
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export async function listDocuments(options: { search?: string; cursor?: string; signal?: AbortSignal } = {}) {
   const params = new URLSearchParams();
   if (options.search) params.set("search", options.search);
@@ -32,6 +42,6 @@ export async function listQuestionHistory(documentId: string, signal: AbortSigna
 export async function getDocument(documentId: string, signal: AbortSignal) {
   const response = await apiFetch(`/documents/${documentId}`, { signal });
   const body = (await response.json().catch(() => null)) as DocumentDetails | { error?: string } | null;
-  if (!response.ok) throw new Error(body && "error" in body ? body.error : "Could not load document.");
+  if (!response.ok) throw new ApiError(body && "error" in body ? body.error ?? "Could not load document." : "Could not load document.", response.status);
   return body as DocumentDetails;
 }

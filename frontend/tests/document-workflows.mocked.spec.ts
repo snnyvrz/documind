@@ -69,6 +69,33 @@ test.describe("mocked API document workflows", () => {
     await expect(page.getByText("stale-report.pdf")).not.toBeVisible();
     await expect(page.getByText("matching-report.pdf")).toBeVisible();
   });
+
+  test("continues polling available documents when another document is missing", async ({ page }) => {
+    const documents = [
+      { documentId: "missing-document", filename: "missing-report.pdf", status: "processing", createdAt: new Date().toISOString() },
+      { documentId: "available-document", filename: "available-report.pdf", status: "processing", createdAt: new Date().toISOString() },
+    ];
+
+    await page.route("**/documents", async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: documents, hasMore: false }) });
+    });
+    await page.route("**/documents/missing-document", async (route) => {
+      await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "Document not found." }) });
+    });
+    await page.route("**/documents/available-document", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ...documents[1], status: "completed", pageCount: 2 }),
+      });
+    });
+
+    await page.goto("/");
+    await expect(page.getByRole("button", { name: /available-report\.pdf 2 pages/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /missing-report\.pdf processing/ })).toBeVisible();
+  });
+
   test("selects and removes a PDF", async ({ page }) => {
     await page.goto("/");
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getDocument } from "@/documents/document-api";
+import { ApiError, getDocument } from "@/documents/document-api";
 import type { DocumentDetails, ListedDocument } from "@/documents/document-types";
 
 export function useDocumentProcessing(documents: ListedDocument[], documentId: string | null, refreshVersion = 0) {
@@ -22,34 +22,42 @@ export function useDocumentProcessing(documents: ListedDocument[], documentId: s
     let timeout: number | undefined;
     let active = true;
     let delay = 1000;
+    let pollingIds = ids;
 
     const poll = async (immediate = false) => {
       if (!immediate && document.hidden) return;
-      try {
-        const responses = await Promise.all(ids.map(async (id) => {
-          return getDocument(id, controller.signal);
-        }));
-        if (!active) return;
-        setDetailsById((current) => Object.fromEntries([
-          ...Object.entries(current),
-          ...responses.map((next) => [next.documentId, next]),
-        ]));
-        setErrorsById((current) => {
-          const next = { ...current };
-          for (const detail of responses) delete next[detail.documentId];
-          return next;
-        });
-        delay = 1000;
-        if (responses.some((next) => next.status !== "completed" && next.status !== "failed")) {
-          timeout = window.setTimeout(() => void poll(), delay);
+      if (!pollingIds.length) return;
+
+      const results = await Promise.allSettled(pollingIds.map((id) => getDocument(id, controller.signal)));
+      if (!active || controller.signal.aborted) return;
+
+      const responses = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+      const failed = results.flatMap((result, index) => result.status === "rejected" ? [{ id: pollingIds[index], cause: result.reason }] : []);
+      const missingIds = new Set(failed.filter(({ cause }) => cause instanceof ApiError && cause.status === 404).map(({ id }) => id));
+      pollingIds = pollingIds.filter((id) => !missingIds.has(id));
+
+      setDetailsById((current) => Object.fromEntries([
+        ...Object.entries(current),
+        ...responses.map((next) => [next.documentId, next]),
+      ]));
+      setErrorsById((current) => {
+        const next = { ...current };
+        for (const detail of responses) delete next[detail.documentId];
+        for (const { id, cause } of failed) {
+          if (missingIds.has(id)) delete next[id];
+          else next[id] = cause instanceof Error ? cause.message : "Could not check document status.";
         }
-      } catch (cause) {
-        if (!active || controller.signal.aborted) return;
-        setErrorsById((current) => ({
-          ...current,
-          ...Object.fromEntries(ids.map((id) => [id, cause instanceof Error ? cause.message : "Could not check document status."])),
-        }));
+        return next;
+      });
+
+      const hasRetryableFailure = failed.some(({ id }) => !missingIds.has(id));
+      const hasPendingDocument = responses.some((next) => next.status !== "completed" && next.status !== "failed");
+      if (hasRetryableFailure) {
         delay = Math.min(delay * 2, 8000);
+      } else {
+        delay = 1000;
+      }
+      if (pollingIds.length && (hasRetryableFailure || hasPendingDocument)) {
         timeout = window.setTimeout(() => void poll(), delay);
       }
     };
