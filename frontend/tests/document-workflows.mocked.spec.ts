@@ -189,6 +189,49 @@ test.describe("mocked API document workflows", () => {
     await expect(page.getByRole("button", { name: /What is the second report about\?/ })).toBeVisible();
   });
 
+  test("restarts polling when retrying the selected failed document", async ({ page }) => {
+    let retryRequested = false;
+    let detailRequests = 0;
+    const document = {
+      documentId: "failed-document",
+      filename: "failed-report.pdf",
+      status: "failed",
+      failureKind: "retryable",
+      error: "Temporary processor failure",
+      createdAt: new Date().toISOString(),
+    };
+
+    await page.route("**/documents", async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [document], hasMore: false }) });
+    });
+    await page.route("**/documents/failed-document/retry", async (route) => {
+      retryRequested = true;
+      await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ status: "queued" }) });
+    });
+    await page.route("**/documents/failed-document", async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      detailRequests += 1;
+      const body = !retryRequested
+        ? document
+        : detailRequests === 2
+          ? { ...document, status: "queued", error: undefined, failureKind: undefined }
+          : { ...document, status: "completed", error: undefined, failureKind: undefined, pageCount: 2 };
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    });
+    await page.route("**/documents/failed-document/questions", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+    });
+
+    await page.goto("/");
+    await page.getByRole("button", { name: /failed-report\.pdf failed/ }).click();
+    await expect(page.getByText("Processing failed")).toBeVisible();
+    await page.getByRole("button", { name: "Retry processing" }).click();
+
+    await expect(page.getByRole("heading", { name: "Ask about this document" })).toBeVisible();
+    expect(detailRequests).toBeGreaterThanOrEqual(3);
+  });
+
   test("confirms document deletion in a modal", async ({ page }) => {
     await page.route("**/documents", async (route) => {
       if (route.request().method() === "GET") {

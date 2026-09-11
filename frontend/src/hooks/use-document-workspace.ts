@@ -15,9 +15,10 @@ export function useDocumentWorkspace() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [history, setHistory] = useState<QuestionHistoryItem[]>([]);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [processingRefreshVersion, setProcessingRefreshVersion] = useState(0);
   const paginationControllerRef = useRef<AbortController | null>(null);
   const resultSetVersionRef = useRef(0);
-  const { details, error: processingError, detailsById } = useDocumentProcessing(documents, selectedId);
+  const { details, error: processingError, detailsById, invalidateDocument } = useDocumentProcessing(documents, selectedId, processingRefreshVersion);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -139,6 +140,8 @@ export function useDocumentWorkspace() {
     try {
       await retryDocument(documentId);
       setDocuments((current) => current.map((document) => document.documentId === documentId ? { ...document, status: "queued", error: undefined, failureKind: undefined } : document));
+      invalidateDocument(documentId);
+      setProcessingRefreshVersion((current) => current + 1);
       setMessage({ type: "success", text: "Processing restarted." });
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "Could not retry document processing." });

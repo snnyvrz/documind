@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getDocument } from "@/documents/document-api";
 import type { DocumentDetails, ListedDocument } from "@/documents/document-types";
 
-export function useDocumentProcessing(documents: ListedDocument[], documentId: string | null) {
+export function useDocumentProcessing(documents: ListedDocument[], documentId: string | null, refreshVersion = 0) {
   const [detailsById, setDetailsById] = useState<Record<string, DocumentDetails>>({});
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
 
@@ -65,11 +65,27 @@ export function useDocumentProcessing(documents: ListedDocument[], documentId: s
       if (timeout !== undefined) window.clearTimeout(timeout);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [targetKey]);
+  }, [targetKey, refreshVersion]);
+
+  const invalidateDocument = (id: string) => {
+    setDetailsById((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    setErrorsById((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  };
 
   return {
     details: documentId ? detailsById[documentId] ?? null : null,
     error: documentId ? errorsById[documentId] ?? null : null,
     detailsById,
+    invalidateDocument,
   };
 }
