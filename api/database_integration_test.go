@@ -112,6 +112,60 @@ func TestPostgresExpiredLeaseIsReclaimedAndStaleWorkerIsFenced(t *testing.T) {
 	}
 }
 
+func TestPostgresRetryOwnedRejectsPermanentFailureAndListsFailureKind(t *testing.T) {
+	store := integrationStore(t)
+	owner := "retry-owner-" + time.Now().UTC().Format("150405.000000000")
+	permanent := integrationDocument(t, store, "failed")
+	retryable := integrationDocument(t, store, "failed")
+	if err := store.database.Model(&document{}).Where("id = ?", permanent.ID).Updates(map[string]any{
+		"owner_id": owner, "failure_kind": failureKindPermanent,
+	}).Error; err != nil {
+		t.Fatalf("mark permanent failure: %v", err)
+	}
+	if err := store.database.Model(&document{}).Where("id = ?", retryable.ID).Updates(map[string]any{
+		"owner_id": owner, "failure_kind": failureKindRetryable,
+	}).Error; err != nil {
+		t.Fatalf("mark retryable failure: %v", err)
+	}
+
+	if err := store.RetryOwned(context.Background(), owner, permanent.ID); !errors.Is(err, errPermanentFailure) {
+		t.Fatalf("permanent retry error = %v, want permanent failure", err)
+	}
+	permanentResult, err := store.Find(context.Background(), permanent.ID)
+	if err != nil {
+		t.Fatalf("find permanent document: %v", err)
+	}
+	if permanentResult.Status != "failed" || permanentResult.FailureKind != failureKindPermanent {
+		t.Fatalf("permanent document after retry = %+v", permanentResult)
+	}
+
+	if err := store.RetryOwned(context.Background(), owner, retryable.ID); err != nil {
+		t.Fatalf("retry retryable failure: %v", err)
+	}
+	retryableResult, err := store.Find(context.Background(), retryable.ID)
+	if err != nil {
+		t.Fatalf("find retryable document: %v", err)
+	}
+	if retryableResult.Status != "queued" || retryableResult.FailureKind != failureKindRetryable || retryableResult.AttemptCount != 0 {
+		t.Fatalf("retryable document after retry = %+v", retryableResult)
+	}
+
+	rows, err := store.ListOwnedPage(context.Background(), owner, "", 10, nil)
+	if err != nil {
+		t.Fatalf("list owned page: %v", err)
+	}
+	seen := map[string]string{}
+	for _, row := range rows {
+		seen[row.ID] = row.FailureKind
+	}
+	if seen[permanent.ID] != failureKindPermanent {
+		t.Fatalf("listed permanent failure kind = %q, want %q", seen[permanent.ID], failureKindPermanent)
+	}
+	if seen[retryable.ID] != failureKindRetryable {
+		t.Fatalf("listed queued failure kind = %q, want %q", seen[retryable.ID], failureKindRetryable)
+	}
+}
+
 func TestPostgresConcurrentUploadReservationsRespectStorageQuota(t *testing.T) {
 	store := integrationStore(t)
 	owner := "quota-owner-" + time.Now().UTC().Format("150405.000000000")

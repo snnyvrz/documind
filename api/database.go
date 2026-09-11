@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type documentStore interface {
@@ -289,7 +290,7 @@ func (s *postgresDocumentStore) ListOwned(ctx context.Context, ownerID string) (
 }
 
 func (s *postgresDocumentStore) ListOwnedPage(ctx context.Context, ownerID, search string, limit int, cursor *documentCursor) ([]documentSummaryRow, error) {
-	query := s.database.WithContext(ctx).Model(&document{}).Select("id, original_filename, status, page_count, error_message, created_at, updated_at").Where("owner_id = ?", ownerID)
+	query := s.database.WithContext(ctx).Model(&document{}).Select("id, original_filename, status, page_count, error_message, failure_kind, created_at, updated_at").Where("owner_id = ?", ownerID)
 	if search != "" {
 		query = query.Where("original_filename ILIKE ?", "%"+search+"%")
 	}
@@ -575,16 +576,20 @@ func (s *postgresDocumentStore) DeleteOwned(ctx context.Context, ownerID, id str
 }
 
 func (s *postgresDocumentStore) RetryOwned(ctx context.Context, ownerID, id string) error {
-	result := s.database.WithContext(ctx).Model(&document{}).
-		Where("id = ? AND owner_id = ? AND status = 'failed'", id, ownerID).
-		Updates(map[string]any{"status": "queued", "error_message": nil, "failure_kind": failureKindRetryable, "next_attempt_at": nil, "lease_token": nil, "lease_expires_at": nil, "attempt_count": 0, "updated_at": time.Now().UTC()})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected != 1 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
+	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current document
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND owner_id = ? AND status = 'failed'", id, ownerID).
+			First(&current).Error; err != nil {
+			return err
+		}
+		if current.FailureKind == failureKindPermanent {
+			return errPermanentFailure
+		}
+		return tx.Model(&document{}).
+			Where("id = ? AND owner_id = ? AND status = 'failed' AND failure_kind <> ?", id, ownerID, failureKindPermanent).
+			Updates(map[string]any{"status": "queued", "error_message": nil, "failure_kind": failureKindRetryable, "next_attempt_at": nil, "lease_token": nil, "lease_expires_at": nil, "attempt_count": 0, "updated_at": time.Now().UTC()}).Error
+	})
 }
 
 func (s *postgresDocumentStore) ClaimNext(ctx context.Context, leaseToken string, leaseDuration time.Duration, maxAttempts int) (*document, error) {
