@@ -44,7 +44,7 @@ CI-equivalent checks:
 
 ## API local setup
 
-- Copy `api/.env.example` → `api/.env` and provide a host-reachable PostgreSQL instance first. The default Compose `db` service is internal-only and is not reachable from a host process at `localhost:5432`. `main.go` loads `.env` via godotenv; `DATABASE_URL` is required (panics if unset/unreachable) and `AutoMigrate` runs on startup. `UPLOAD_DIRECTORY` defaults to the repository `data/` directory with the example settings.
+- Copy `api/.env.example` → `api/.env` and provide a host-reachable PostgreSQL instance first. The default Compose `db` service is internal-only and is not reachable from a host process at `localhost:5432`. `main.go` loads `.env` via godotenv; `DATABASE_URL` is required (panics if unset/unreachable) and embedded Goose migrations run through the `migrate` command before the API starts. Migration `00005` removes orphaned document chunks and questions before adding their `ON DELETE CASCADE` foreign keys. `UPLOAD_DIRECTORY` defaults to the repository `data/` directory with the example settings.
 - Start the document processor locally, or set `DOCUMENT_PROCESSOR_GRPC_URL` to another processor instance before running the API. The processor also requires Ollama and the configured embedding/chat models for actual document processing.
 
 ## Gotchas

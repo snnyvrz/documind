@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"strings"
@@ -11,8 +12,105 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 	"gorm.io/gorm"
 )
+
+func TestPostgresUpgradeRepairsDocumentForeignKeys(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+	database, err := sql.Open("pgx", databaseURL)
+	if err != nil {
+		t.Fatalf("open migration database: %v", err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+	if err := database.Ping(); err != nil {
+		t.Fatalf("ping migration database: %v", err)
+	}
+
+	schema := "upgrade_" + strings.ReplaceAll(time.Now().UTC().Format("20060102150405.000000000"), ".", "")
+	if _, err := database.Exec(`CREATE SCHEMA ` + quoteIdentifier(schema)); err != nil {
+		t.Fatalf("create migration schema: %v", err)
+	}
+	defer database.Exec(`DROP SCHEMA ` + quoteIdentifier(schema) + ` CASCADE`)
+	if _, err := database.Exec(`SET search_path TO ` + quoteIdentifier(schema)); err != nil {
+		t.Fatalf("set migration search path: %v", err)
+	}
+
+	goose.SetBaseFS(migrationFiles)
+	if err := goose.SetDialect("postgres"); err != nil {
+		t.Fatalf("set migration dialect: %v", err)
+	}
+	if err := goose.UpTo(database, "migrations", 4); err != nil {
+		t.Fatalf("apply previously shipped migrations: %v", err)
+	}
+	if _, err := database.Exec(`ALTER TABLE document_chunks DROP CONSTRAINT IF EXISTS document_chunks_document_id_fkey;
+ALTER TABLE document_questions DROP CONSTRAINT IF EXISTS document_questions_document_id_fkey`); err != nil {
+		t.Fatalf("remove legacy constraints: %v", err)
+	}
+
+	validDocument := "00000000-0000-0000-0000-000000000001"
+	missingDocument := "00000000-0000-0000-0000-000000000002"
+	if _, err := database.Exec(`INSERT INTO documents
+        (id, owner_id, original_filename, stored_path, mime_type, size, page_count, status, created_at, updated_at)
+        VALUES ($1, 'upgrade-owner', 'upgrade.pdf', 'upgrade.pdf', 'application/pdf', 1, 1, 'completed', NOW(), NOW())`, validDocument); err != nil {
+		t.Fatalf("insert upgrade document: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO document_chunks
+        (id, document_id, chunk_index, text, start_offset, end_offset, page_start, page_end, embedding, created_at)
+        VALUES ('00000000-0000-0000-0000-000000000011', $1, 0, 'valid', 0, 5, 1, 1,
+                ('[' || repeat('0,', 767) || '0]')::vector, NOW()),
+               ('00000000-0000-0000-0000-000000000012', $2, 0, 'orphan', 0, 6, 1, 1,
+                ('[' || repeat('0,', 767) || '0]')::vector, NOW())`, validDocument, missingDocument); err != nil {
+		t.Fatalf("insert upgrade chunks: %v", err)
+	}
+	if _, err := database.Exec(`INSERT INTO document_questions
+        (id, owner_id, document_id, question, answer, sources, created_at)
+        VALUES ('00000000-0000-0000-0000-000000000021', 'upgrade-owner', $1, 'valid?', 'yes', '[]', NOW()),
+               ('00000000-0000-0000-0000-000000000022', 'upgrade-owner', $2, 'orphan?', 'no', '[]', NOW())`, validDocument, missingDocument); err != nil {
+		t.Fatalf("insert upgrade questions: %v", err)
+	}
+
+	if err := goose.UpTo(database, "migrations", 5); err != nil {
+		t.Fatalf("apply constraint repair migration: %v", err)
+	}
+	for _, table := range []string{"document_chunks", "document_questions"} {
+		var count int
+		if err := database.QueryRow(`SELECT COUNT(*) FROM `+quoteIdentifier(table)+` WHERE document_id = $1`, missingDocument).Scan(&count); err != nil {
+			t.Fatalf("count orphaned %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("orphaned %s rows = %d, want 0", table, count)
+		}
+	}
+
+	if _, err := database.Exec(`DELETE FROM documents WHERE id = $1`, validDocument); err != nil {
+		t.Fatalf("delete upgraded document: %v", err)
+	}
+	for _, table := range []string{"document_chunks", "document_questions"} {
+		var count int
+		if err := database.QueryRow(`SELECT COUNT(*) FROM `+quoteIdentifier(table)+` WHERE document_id = $1`, validDocument).Scan(&count); err != nil {
+			t.Fatalf("count cascaded %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("cascaded %s rows = %d, want 0", table, count)
+		}
+	}
+
+	if _, err := database.Exec(`INSERT INTO document_questions
+        (id, owner_id, document_id, question, answer, sources, created_at)
+        VALUES ('00000000-0000-0000-0000-000000000023', 'upgrade-owner', $1, 'invalid?', 'no', '[]', NOW())`, missingDocument); err == nil {
+		t.Fatal("insert with missing document succeeded")
+	}
+}
+
+func quoteIdentifier(identifier string) string {
+	return `"` + strings.ReplaceAll(identifier, `"`, `""`) + `"`
+}
 
 func integrationStore(t *testing.T) *postgresDocumentStore {
 	t.Helper()

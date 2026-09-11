@@ -483,6 +483,12 @@ When upgrading a database created before ownership was enabled, set
 migration assigns that owner only to rows without an owner and then enforces the
 non-null constraint. Do not use `local-dev` for a shared deployment.
 
+Database upgrades run automatically through the versioned Goose migrations. Migration
+`00005_document_foreign_keys.sql` removes orphaned rows from `document_chunks` and
+`document_questions`, then adds `ON DELETE CASCADE` foreign keys to both tables. This
+cleanup is required so databases created by the earlier GORM schema receive the same
+referential-integrity behavior as fresh installations.
+
 ## RAG Evaluation
 
 The versioned evaluation contract lives in `evals/`. It records reference
