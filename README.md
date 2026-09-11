@@ -542,7 +542,7 @@ The main API environment variables are:
 | `QUESTION_CAPACITY` | Maximum concurrent answer streams | `2` |
 | `EMBEDDING_CAPACITY` | Maximum concurrent question/document embedding requests | `2` |
 | `MAX_PDF_PAGES` | Maximum pages extracted from one PDF | `500` |
-| `MAX_EXTRACTED_TEXT_BYTES` | Maximum UTF-8 extracted text per PDF | `26214400` |
+| `MAX_EXTRACTED_TEXT_BYTES` | Maximum UTF-8 extracted text per PDF | `20971520` |
 | `MAX_CHUNKS` | Maximum chunks produced per PDF | `10000` |
 | `PDF_EXTRACTION_TIMEOUT` | Maximum isolated extraction time in seconds | `60` |
 | `PDF_EXTRACTION_MEMORY_BYTES` | Maximum isolated extraction address space | `536870912` |

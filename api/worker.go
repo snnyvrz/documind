@@ -21,7 +21,7 @@ import (
 
 const maxGRPCMessageSize = maxUploadSize + (1 << 20)
 const maxEmbeddingDimensions uint32 = 768
-const maxExtractedTextBytes uint64 = 25 * 1024 * 1024
+const maxExtractedTextBytes uint64 = 20 * 1024 * 1024
 const maxProcessedPages uint32 = 500
 const maxProcessedChunks uint32 = 10000
 

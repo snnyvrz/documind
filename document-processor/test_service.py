@@ -4,8 +4,9 @@ from unittest.mock import Mock, patch
 import grpc
 import httpx
 import pytest
+from generated import extractor_pb2
 
-from service import DocumentProcessor, chat, chunks
+from service import GRPC_MAX_MESSAGE_LENGTH, MAX_EXTRACTED_TEXT_BYTES, DocumentProcessor, chat, chunks, extract_pages
 
 
 class AbortCalled(Exception):
@@ -34,6 +35,31 @@ def test_process_classifies_malformed_pdf_as_invalid_argument() -> None:
         "could not process PDF: malformed PDF",
     )
     embed.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("size", "raises"),
+    [(MAX_EXTRACTED_TEXT_BYTES, False), (MAX_EXTRACTED_TEXT_BYTES + 1, True)],
+)
+def test_extract_pages_enforces_transport_safe_text_boundary(size: int, raises: bool) -> None:
+    page = Mock()
+    page.extract_text.return_value = "x" * size
+
+    with patch("service.PdfReader", return_value=SimpleNamespace(pages=[page])):
+        if raises:
+            with pytest.raises(ValueError, match="maximum extracted text size"):
+                extract_pages(b"%PDF-")
+        else:
+            assert extract_pages(b"%PDF-") == ["x" * size]
+
+    metadata = extractor_pb2.ProcessMetadata(
+        document_id="document-1",
+        text="x" * MAX_EXTRACTED_TEXT_BYTES,
+        page_count=500,
+        chunk_count=10000,
+        embedding_dimensions=768,
+    )
+    assert metadata.ByteSize() < GRPC_MAX_MESSAGE_LENGTH
 
 
 def test_process_classifies_ollama_failure_as_unavailable() -> None:
