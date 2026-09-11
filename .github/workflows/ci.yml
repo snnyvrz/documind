@@ -54,6 +54,15 @@ jobs:
         working-directory: document-processor
         run: uv run pytest
 
+  rag-evaluator:
+    name: RAG evaluator metrics
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run deterministic evaluator tests
+        working-directory: scripts
+        run: python -m unittest discover -p 'test_*.py'
+
   frontend:
     name: Frontend checks
     runs-on: ubuntu-latest
