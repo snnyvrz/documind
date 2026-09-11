@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { deleteDocument, listDocuments, listQuestionHistory, retryDocument } from "@/documents/document-api";
 import type { ListedDocument, QuestionHistoryItem, WorkspaceMessage } from "@/documents/document-types";
 import { useDocumentProcessing } from "@/hooks/use-document-processing";
@@ -15,6 +15,8 @@ export function useDocumentWorkspace() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [history, setHistory] = useState<QuestionHistoryItem[]>([]);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const paginationControllerRef = useRef<AbortController | null>(null);
+  const resultSetVersionRef = useRef(0);
   const { details, error: processingError, detailsById } = useDocumentProcessing(documents, selectedId);
 
   useEffect(() => {
@@ -38,26 +40,43 @@ export function useDocumentWorkspace() {
 
   const loadMoreDocuments = async () => {
     if (!hasMore || !nextCursor || loadingMore) return;
+    const searchQuery = search.trim();
+    const cursor = nextCursor;
+    const resultSetVersion = resultSetVersionRef.current;
+    const controller = new AbortController();
+    paginationControllerRef.current = controller;
     setLoadingMore(true);
     try {
-      const response = await listDocuments({ search: search.trim(), cursor: nextCursor });
+      const response = await listDocuments({ search: searchQuery, cursor, signal: controller.signal });
+      if (resultSetVersion !== resultSetVersionRef.current || controller.signal.aborted) return;
       setDocuments((current) => [...current, ...response.items]);
       setNextCursor(response.nextCursor);
       setHasMore(response.hasMore);
     } catch (error) {
-      setMessage({ type: "error", text: error instanceof Error ? error.message : "Could not load more documents." });
+      if (!controller.signal.aborted && resultSetVersion === resultSetVersionRef.current) {
+        setMessage({ type: "error", text: error instanceof Error ? error.message : "Could not load more documents." });
+      }
     } finally {
-      setLoadingMore(false);
+      if (paginationControllerRef.current === controller) {
+        paginationControllerRef.current = null;
+        setLoadingMore(false);
+      }
     }
   };
 
   const updateSearch = (value: string) => {
     // A new query starts a new result set; do not append pages from the prior query.
+    paginationControllerRef.current?.abort();
+    paginationControllerRef.current = null;
+    resultSetVersionRef.current += 1;
     setDocuments([]);
     setNextCursor(undefined);
     setHasMore(false);
+    setLoadingMore(false);
     setSearch(value);
   };
+
+  useEffect(() => () => paginationControllerRef.current?.abort(), []);
 
   useEffect(() => {
     if (!Object.keys(detailsById).length) return;

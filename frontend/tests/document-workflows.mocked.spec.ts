@@ -36,6 +36,39 @@ test.describe("mocked API document workflows", () => {
     await expect(page.getByText("newer-report.pdf")).not.toBeVisible();
     expect(requests.some((query) => query.includes("search=matching"))).toBe(true);
   });
+
+  test("does not append a delayed pagination response after search changes", async ({ page }) => {
+    let paginationStarted!: () => void;
+    let releasePagination!: () => void;
+    const paginationRequestStarted = new Promise<void>((resolve) => { paginationStarted = resolve; });
+    const delayedPagination = new Promise<void>((resolve) => { releasePagination = resolve; });
+
+    await page.route(/\/documents(?:\?.*)?$/, async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("cursor")) {
+        paginationStarted();
+        await delayedPagination;
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [{ documentId: "stale", filename: "stale-report.pdf", status: "completed", createdAt: new Date().toISOString() }], hasMore: false }) });
+        return;
+      }
+      if (url.searchParams.get("search") === "matching") {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [{ documentId: "match", filename: "matching-report.pdf", status: "completed", createdAt: new Date().toISOString() }], hasMore: false }) });
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [{ documentId: "newer", filename: "newer-report.pdf", status: "completed", createdAt: new Date().toISOString() }], nextCursor: "older-page", hasMore: true }) });
+    });
+
+    await page.goto("/");
+    await expect(page.getByText("newer-report.pdf")).toBeVisible();
+    await page.getByRole("button", { name: "Load more" }).click();
+    await paginationRequestStarted;
+    await page.getByLabel("Search documents").fill("matching");
+    await expect(page.getByText("matching-report.pdf")).toBeVisible();
+    releasePagination();
+    await expect(page.getByText("stale-report.pdf")).not.toBeVisible();
+    await expect(page.getByText("matching-report.pdf")).toBeVisible();
+  });
   test("selects and removes a PDF", async ({ page }) => {
     await page.goto("/");
 
