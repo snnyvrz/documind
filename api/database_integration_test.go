@@ -28,6 +28,7 @@ func TestPostgresUpgradeRepairsDocumentForeignKeys(t *testing.T) {
 	}
 	defer database.Close()
 	database.SetMaxOpenConns(1)
+	database.SetMaxIdleConns(1)
 	if err := database.Ping(); err != nil {
 		t.Fatalf("ping migration database: %v", err)
 	}
@@ -45,9 +46,14 @@ func TestPostgresUpgradeRepairsDocumentForeignKeys(t *testing.T) {
 	if err := goose.SetDialect("postgres"); err != nil {
 		t.Fatalf("set migration dialect: %v", err)
 	}
+	previousGooseTable := goose.TableName()
+	goose.SetTableName(quoteIdentifier(schema) + ".goose_db_version")
+	defer goose.SetTableName(previousGooseTable)
+	setUpgradeSearchPath(t, database, schema)
 	if err := goose.UpTo(database, "migrations", 4); err != nil {
 		t.Fatalf("apply previously shipped migrations: %v", err)
 	}
+	setUpgradeSearchPath(t, database, schema)
 	if _, err := database.Exec(`ALTER TABLE document_chunks DROP CONSTRAINT IF EXISTS document_chunks_document_id_fkey;
 ALTER TABLE document_questions DROP CONSTRAINT IF EXISTS document_questions_document_id_fkey`); err != nil {
 		t.Fatalf("remove legacy constraints: %v", err)
@@ -75,6 +81,7 @@ ALTER TABLE document_questions DROP CONSTRAINT IF EXISTS document_questions_docu
 		t.Fatalf("insert upgrade questions: %v", err)
 	}
 
+	setUpgradeSearchPath(t, database, schema)
 	if err := goose.UpTo(database, "migrations", 5); err != nil {
 		t.Fatalf("apply constraint repair migration: %v", err)
 	}
@@ -105,6 +112,13 @@ ALTER TABLE document_questions DROP CONSTRAINT IF EXISTS document_questions_docu
         (id, owner_id, document_id, question, answer, sources, created_at)
         VALUES ('00000000-0000-0000-0000-000000000023', 'upgrade-owner', $1, 'invalid?', 'no', '[]', NOW())`, missingDocument); err == nil {
 		t.Fatal("insert with missing document succeeded")
+	}
+}
+
+func setUpgradeSearchPath(t *testing.T, database *sql.DB, schema string) {
+	t.Helper()
+	if _, err := database.Exec(`SET search_path TO ` + quoteIdentifier(schema) + `, public`); err != nil {
+		t.Fatalf("set migration search path: %v", err)
 	}
 }
 
