@@ -47,7 +47,9 @@ PDF processing is asynchronous:
     and cancels polling when another document is selected.
 11. The frontend lists completed and in-progress documents, lets users reopen or
     delete previous documents, and asks questions about completed documents.
-12. Questions stream answers over SSE. The frontend displays the generated answer
+12. Questions stream answers over SSE. The processor must report an explicit
+    successful model completion; incomplete or error responses are failed and
+    are not saved to question history. The frontend displays the generated answer
     and retrieved source passages, and can open the corresponding PDF page in a
     preview. Switching documents or stopping an answer cancels the active stream,
     and pressing Enter while a stream is active is ignored.

@@ -509,6 +509,7 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 	response.Header().Set("X-Accel-Buffering", "no")
 	flusher, canFlush := response.(http.Flusher)
 	var answerFromStream string
+	var modelCompleted bool
 	for {
 		event, receiveErr := stream.Recv()
 		if receiveErr == io.EOF {
@@ -517,6 +518,11 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 					return nil
 				}
 				writeSSEError(response, flusher, canFlush, "generation_timeout", "Answer generation timed out.")
+				writeSSEDone(response, flusher, canFlush, false)
+				return nil
+			}
+			if !modelCompleted {
+				writeSSEError(response, flusher, canFlush, "generation_failed", "Could not complete the answer.")
 				writeSSEDone(response, flusher, canFlush, false)
 				return nil
 			}
@@ -535,8 +541,12 @@ func (h *documentHandler) Ask(c *echo.Context) error {
 			return nil
 		}
 		payload, _ := json.Marshal(map[string]string{"text": event.Text})
-		answerFromStream += event.Text
-		writeSSE(response, flusher, canFlush, "token", payload)
+		if event.Done {
+			modelCompleted = true
+		} else {
+			answerFromStream += event.Text
+			writeSSE(response, flusher, canFlush, "token", payload)
+		}
 		if canFlush {
 			flusher.Flush()
 		}

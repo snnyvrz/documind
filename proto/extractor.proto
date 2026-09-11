@@ -60,4 +60,7 @@ message AnswerContext {
   uint32 page_start = 3;
   uint32 page_end = 4;
 }
-message AnswerEvent { string text = 1; }
+message AnswerEvent {
+  string text = 1;
+  bool done = 2;
+}

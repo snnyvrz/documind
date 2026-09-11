@@ -57,6 +57,7 @@ CI-equivalent checks:
 - Document selection is a cancellation boundary: switching or deleting a document must abort its status polling and answer stream and clear the current answer.
 - Question submission needs an in-flight guard. Enter and button actions must not start a second answer stream while one is active.
 - `GET /documents/:id/chunks` exposes stored chunk metadata for API consumers. Question responses also include retrieved source passages, which the frontend renders and links to the original PDF preview.
+- Answer streams require an explicit successful completion event from the processor. Premature model streams and model error payloads must produce SSE failure and must not be saved to question history.
 - Deleting a document removes its database chunks and uploaded `documents/<id>/` directory.
 - The RAG evaluator requires login or registration credentials, preserves the authentication cookie, rejects failed document processing, and requires a successful SSE `done` event with `ok: true`.
 - RAG passage metrics use deterministic one-to-one matching between retrieved and gold passages. Duplicate or overlapping evidence cannot recover the same gold passage twice; duplicates still consume rank positions and affect precision and nDCG. Run `python -m unittest discover -s scripts -p 'test_*.py'` when changing evaluator metrics.

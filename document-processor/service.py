@@ -212,9 +212,14 @@ def chat(question: str, contexts: list[Any], on_response: Callable[[httpx.Respon
         for line in response.iter_lines():
             if line:
                 payload = json.loads(line)
+                if payload.get("error"):
+                    raise RuntimeError(f"Ollama returned an error: {payload['error']}")
                 value = payload.get("message", {}).get("content", "")
                 if value:
                     yield value
+                if payload.get("done") is True:
+                    return
+        raise RuntimeError("Ollama ended the chat stream without a successful completion")
 
 
 class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
@@ -254,6 +259,8 @@ class DocumentProcessor(extractor_pb2_grpc.DocumentProcessorServicer):
                 if not context.is_active():
                     return
                 yield extractor_pb2.AnswerEvent(text=value)
+            if context.is_active():
+                yield extractor_pb2.AnswerEvent(done=True)
         except Exception as error:
             if not context.is_active():
                 return

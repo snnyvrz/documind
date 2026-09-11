@@ -7,6 +7,7 @@ import (
 	"gorm.io/gorm"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	extractorpb "api/proto"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type memoryDocumentStore struct {
@@ -415,5 +421,88 @@ func TestListQuestionHistory(t *testing.T) {
 	}
 	if len(body) != 1 || body[0].Question != "What is this?" || len(body[0].Sources) != 1 || body[0].Sources[0].Text != "test" {
 		t.Fatalf("history = %+v", body)
+	}
+}
+
+type answerTestProcessor struct {
+	extractorpb.UnimplementedDocumentProcessorServer
+	events []*extractorpb.AnswerEvent
+	err    error
+}
+
+func (p *answerTestProcessor) EmbedQuestion(context.Context, *extractorpb.EmbedQuestionRequest) (*extractorpb.EmbedQuestionResponse, error) {
+	return &extractorpb.EmbedQuestionResponse{Embedding: make([]float32, maxEmbeddingDimensions), Dimensions: maxEmbeddingDimensions}, nil
+}
+
+func (p *answerTestProcessor) AnswerQuestion(_ *extractorpb.AnswerQuestionRequest, stream extractorpb.DocumentProcessor_AnswerQuestionServer) error {
+	for _, event := range p.events {
+		if err := stream.Send(event); err != nil {
+			return err
+		}
+	}
+	return p.err
+}
+
+func startAnswerTestProcessor(t *testing.T, processor *answerTestProcessor) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	extractorpb.RegisterDocumentProcessorServer(server, processor)
+	go server.Serve(listener)
+	t.Setenv("DOCUMENT_PROCESSOR_GRPC_URL", listener.Addr().String())
+	t.Cleanup(func() {
+		server.Stop()
+		listener.Close()
+	})
+}
+
+func TestAskRequiresSuccessfulProcessorCompletion(t *testing.T) {
+	tests := []struct {
+		name   string
+		events []*extractorpb.AnswerEvent
+		err    error
+	}{
+		{name: "premature EOF", events: []*extractorpb.AnswerEvent{{Text: "partial"}}},
+		{name: "processor error", err: status.Error(codes.Unavailable, "model failed")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &memoryDocumentStore{documents: []document{{ID: "document-id", Status: "completed"}}}
+			startAnswerTestProcessor(t, &answerTestProcessor{events: test.events, err: test.err})
+			server := newServer(t.TempDir(), store)
+			request := httptest.NewRequest(http.MethodPost, "/documents/document-id/questions", bytes.NewBufferString(`{"question":"What is this?"}`))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+
+			server.ServeHTTP(response, request)
+
+			if !bytes.Contains(response.Body.Bytes(), []byte("event: error")) || !bytes.Contains(response.Body.Bytes(), []byte("event: done\ndata: {\"ok\":false}")) {
+				t.Fatalf("response = %q", response.Body.String())
+			}
+			if len(store.questions) != 0 {
+				t.Fatalf("saved questions = %d, want 0", len(store.questions))
+			}
+		})
+	}
+}
+
+func TestAskSavesOnlyExplicitlyCompletedProcessorAnswer(t *testing.T) {
+	store := &memoryDocumentStore{documents: []document{{ID: "document-id", Status: "completed"}}}
+	startAnswerTestProcessor(t, &answerTestProcessor{events: []*extractorpb.AnswerEvent{{Text: "answer"}, {Done: true}}})
+	server := newServer(t.TempDir(), store)
+	request := httptest.NewRequest(http.MethodPost, "/documents/document-id/questions", bytes.NewBufferString(`{"question":"What is this?"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	server.ServeHTTP(response, request)
+
+	if !bytes.Contains(response.Body.Bytes(), []byte("event: done\ndata: {\"ok\":true}")) {
+		t.Fatalf("response = %q", response.Body.String())
+	}
+	if len(store.questions) != 1 || store.questions[0].Answer != "answer" {
+		t.Fatalf("saved questions = %+v", store.questions)
 	}
 }

@@ -161,7 +161,7 @@ def test_chat_places_temperature_in_ollama_options() -> None:
     response = Mock()
     response.__enter__ = Mock(return_value=response)
     response.__exit__ = Mock(return_value=False)
-    response.iter_lines.return_value = [b'{"message":{"content":"answer"}}']
+    response.iter_lines.return_value = [b'{"message":{"content":"answer"},"done":true}']
 
     with patch("service.httpx.stream", return_value=response) as stream:
         assert list(chat("question", [SimpleNamespace(chunk_index=2, page_start=3, page_end=4, text="evidence")])) == ["answer"]
@@ -169,6 +169,54 @@ def test_chat_places_temperature_in_ollama_options() -> None:
     payload = stream.call_args.kwargs["json"]
     assert payload["options"] == {"temperature": 0}
     assert "temperature" not in payload
+
+
+def test_chat_rejects_premature_stream_end() -> None:
+    response = Mock()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.iter_lines.return_value = [b'{"message":{"content":"partial"},"done":false}']
+
+    with patch("service.httpx.stream", return_value=response), pytest.raises(
+        RuntimeError, match="without a successful completion"
+    ):
+        list(chat("question", []))
+
+
+def test_chat_propagates_ollama_error_payload() -> None:
+    response = Mock()
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.iter_lines.return_value = [b'{"error":"model unavailable"}']
+
+    with patch("service.httpx.stream", return_value=response), pytest.raises(
+        RuntimeError, match="Ollama returned an error: model unavailable"
+    ):
+        list(chat("question", []))
+
+
+def test_answer_question_emits_completion_only_after_success() -> None:
+    context = Mock()
+    context.is_active.return_value = True
+    request = SimpleNamespace(question="question", contexts=[])
+
+    with patch("service.chat", return_value=iter(["answer"])):
+        events = list(DocumentProcessor().AnswerQuestion(request, context))
+
+    assert [(event.text, event.done) for event in events] == [("answer", False), ("", True)]
+
+
+def test_answer_question_aborts_when_chat_fails() -> None:
+    context = aborting_context()
+    context.is_active.return_value = True
+    request = SimpleNamespace(question="question", contexts=[])
+
+    with patch("service.chat", side_effect=RuntimeError("incomplete answer")), pytest.raises(AbortCalled):
+        list(DocumentProcessor().AnswerQuestion(request, context))
+
+    context.abort.assert_called_once_with(
+        grpc.StatusCode.UNAVAILABLE, "could not answer question: incomplete answer"
+    )
 
 
 def test_ready_checks_models_with_post() -> None:
