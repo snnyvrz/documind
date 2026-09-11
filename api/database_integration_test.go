@@ -275,6 +275,61 @@ func TestPostgresStartupRecoveryReclaimsExpiredReservationsAndReconcilesUsage(t 
 	}
 }
 
+func TestPostgresConcurrentRecoveryAndAnswerCompletionDoNotDeadlock(t *testing.T) {
+	store := integrationStore(t)
+	owner := "recovery-completion-owner-" + time.Now().UTC().Format("150405.000000000")
+	defer store.database.Exec("DELETE FROM answer_reservations WHERE owner_id = ?", owner)
+	defer store.database.Exec("DELETE FROM db_owner_usages WHERE owner_id = ?", owner)
+
+	if err := store.database.Create(&dbOwnerUsage{OwnerID: owner, ActiveAnswers: 1}).Error; err != nil {
+		t.Fatalf("create usage: %v", err)
+	}
+	for attempt := 0; attempt < 32; attempt++ {
+		reservationID := mustIntegrationID(t)
+		if err := store.database.Create(&answerReservation{
+			ID: reservationID, OwnerID: owner, RequestID: reservationID,
+			State: "active", ExpiresAt: time.Now().UTC().Add(-time.Minute), CreatedAt: time.Now().UTC(),
+		}).Error; err != nil {
+			t.Fatalf("create answer reservation: %v", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		start := make(chan struct{})
+		results := make(chan error, 2)
+		go func() {
+			<-start
+			results <- store.RecoverExpiredReservations(ctx)
+		}()
+		go func() {
+			<-start
+			results <- store.EndAnswer(ctx, reservationID, "released")
+		}()
+		close(start)
+		for range 2 {
+			if err := <-results; err != nil {
+				cancel()
+				t.Fatalf("concurrent quota operation: %v", err)
+			}
+		}
+		cancel()
+	}
+
+	var active int64
+	if err := store.database.Model(&answerReservation{}).Where("owner_id = ? AND state = 'active'", owner).Count(&active).Error; err != nil {
+		t.Fatalf("count active reservations: %v", err)
+	}
+	if active != 0 {
+		t.Fatalf("active reservations = %d, want 0", active)
+	}
+	var usage dbOwnerUsage
+	if err := store.database.First(&usage, "owner_id = ?", owner).Error; err != nil {
+		t.Fatalf("load usage: %v", err)
+	}
+	if usage.ActiveAnswers != 0 {
+		t.Fatalf("active answer usage = %d, want 0", usage.ActiveAnswers)
+	}
+}
+
 func TestPostgresAdmissionRecoveryReclaimsExpiredReservationsBeforeQuotaCheck(t *testing.T) {
 	store := integrationStore(t)
 	owner := "admission-recovery-owner-" + time.Now().UTC().Format("150405.000000000")

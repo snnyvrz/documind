@@ -63,6 +63,13 @@ best-effort deletion, while startup reconciliation removes old unreferenced
 objects using `UPLOAD_ORPHAN_MIN_AGE`. Storage cleanup failures do not block API
 startup or alter database accounting.
 
+Upload and answer quota reservations are durable PostgreSQL records. Admission,
+completion, release, and startup recovery lock each owner's usage row before
+locking that owner's reservations, then recheck reservation state while holding
+the locks. This shared lock order prevents concurrent startup recovery and
+answer completion from deadlocking; recovery is idempotent and rebuilds usage
+counters from the committed documents and live reservations.
+
 ## Repository Layout
 
 ```text

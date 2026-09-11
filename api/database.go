@@ -252,8 +252,11 @@ func (s *postgresDocumentStore) CreateOwned(ctx context.Context, ownerID string,
 
 func (s *postgresDocumentStore) CreateOwnedAndCommitUpload(ctx context.Context, ownerID string, document document, reservationID string) error {
 	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := lockOwnerUsage(tx, ownerID); err != nil {
+			return err
+		}
 		var reservation uploadReservation
-		if err := tx.Where("id = ?", reservationID).First(&reservation).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", reservationID).First(&reservation).Error; err != nil {
 			return err
 		}
 		if reservation.State != "reserved" || reservation.OwnerID != ownerID || reservation.DocumentID != document.ID {
@@ -343,12 +346,14 @@ func (s *postgresDocumentStore) CommitUpload(ctx context.Context, reservationID 
 		if err := tx.Where("id = ?", reservationID).First(&reservation).Error; err != nil {
 			return err
 		}
+		if err := lockOwnerUsage(tx, reservation.OwnerID); err != nil {
+			return err
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", reservationID).First(&reservation).Error; err != nil {
+			return err
+		}
 		if reservation.State != "reserved" {
 			return nil
-		}
-		var usage dbOwnerUsage
-		if err := tx.Raw("SELECT * FROM db_owner_usages WHERE owner_id = ? FOR UPDATE", reservation.OwnerID).Scan(&usage).Error; err != nil {
-			return err
 		}
 		now := time.Now().UTC()
 		if err := tx.Model(&dbOwnerUsage{}).Where("owner_id = ?", reservation.OwnerID).Updates(map[string]any{"reserved_bytes": gorm.Expr("reserved_bytes - ?", reservation.Bytes), "reserved_documents": gorm.Expr("reserved_documents - 1"), "committed_bytes": gorm.Expr("committed_bytes + ?", reservation.Bytes), "committed_documents": gorm.Expr("committed_documents + 1"), "updated_at": now}).Error; err != nil {
@@ -362,6 +367,12 @@ func (s *postgresDocumentStore) ReleaseUpload(ctx context.Context, reservationID
 	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var reservation uploadReservation
 		if err := tx.Where("id = ?", reservationID).First(&reservation).Error; err != nil {
+			return err
+		}
+		if err := lockOwnerUsage(tx, reservation.OwnerID); err != nil {
+			return err
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", reservationID).First(&reservation).Error; err != nil {
 			return err
 		}
 		if reservation.State != "reserved" {
@@ -414,87 +425,79 @@ func (s *postgresDocumentStore) RecoverExpiredReservations(ctx context.Context) 
 }
 
 func recoverExpiredReservations(tx *gorm.DB, ownerID *string, now time.Time) error {
-	ownerFilter := ""
+	owners := []string{}
 	if ownerID != nil {
-		ownerFilter = " AND owner_id = ?"
-	}
-	uploadArgs := []any{now, now}
-	if ownerID != nil {
-		uploadArgs = append(uploadArgs, *ownerID)
-	}
-	if err := tx.Exec("UPDATE upload_reservations SET state = 'released', released_at = ? WHERE state = 'reserved' AND expires_at <= ?"+ownerFilter, uploadArgs...).Error; err != nil {
-		return err
-	}
-	answerArgs := []any{now, now}
-	if ownerID != nil {
-		answerArgs = append(answerArgs, *ownerID)
-	}
-	if err := tx.Exec("UPDATE answer_reservations SET state = 'expired', finished_at = ? WHERE state = 'active' AND expires_at <= ?"+ownerFilter, answerArgs...).Error; err != nil {
+		owners = append(owners, *ownerID)
+	} else if err := tx.Raw(`SELECT owner_id FROM (
+SELECT owner_id FROM db_owner_usages
+UNION SELECT owner_id FROM documents
+UNION SELECT owner_id FROM upload_reservations
+UNION SELECT owner_id FROM answer_reservations
+) owners ORDER BY owner_id`).Scan(&owners).Error; err != nil {
 		return err
 	}
 
-	where := ""
-	whereArgs := []any{}
-	if ownerID != nil {
-		where = " WHERE owner_id = ?"
-		whereArgs = append(whereArgs, *ownerID)
-	}
-	query := `WITH owners AS (
-    SELECT owner_id FROM db_owner_usages` + where + `
-    UNION SELECT owner_id FROM documents` + where + `
-    UNION SELECT owner_id FROM upload_reservations` + where + `
-    UNION SELECT owner_id FROM answer_reservations` + where + `
-), committed AS (
-    SELECT owner_id, COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS documents
-    FROM documents` + where + ` GROUP BY owner_id
-), reserved AS (
-    SELECT owner_id, COALESCE(SUM(bytes), 0) AS bytes, COUNT(*) AS documents
-    FROM upload_reservations WHERE state = 'reserved'` + func() string {
-		if ownerID == nil {
-			return ""
+	for _, owner := range owners {
+		if err := lockOwnerUsage(tx, owner); err != nil {
+			return err
 		}
-		return " AND owner_id = ?"
-	}() + ` GROUP BY owner_id
-), active AS (
-    SELECT owner_id, COUNT(*) AS answers
-    FROM answer_reservations WHERE state = 'active'` + func() string {
-		if ownerID == nil {
-			return ""
+
+		var uploads []uploadReservation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("owner_id = ? AND state = 'reserved' AND expires_at <= ?", owner, now).Find(&uploads).Error; err != nil {
+			return err
 		}
-		return " AND owner_id = ?"
-	}() + ` GROUP BY owner_id
-)
-INSERT INTO db_owner_usages (owner_id, committed_bytes, committed_documents, reserved_bytes, reserved_documents, active_answers, updated_at)
-SELECT owners.owner_id,
-       COALESCE(committed.bytes, 0), COALESCE(committed.documents, 0),
-       COALESCE(reserved.bytes, 0), COALESCE(reserved.documents, 0),
-       COALESCE(active.answers, 0), ?
-FROM owners
-LEFT JOIN committed ON committed.owner_id = owners.owner_id
-LEFT JOIN reserved ON reserved.owner_id = owners.owner_id
-LEFT JOIN active ON active.owner_id = owners.owner_id
-ON CONFLICT (owner_id) DO UPDATE SET
-    committed_bytes = EXCLUDED.committed_bytes,
-    committed_documents = EXCLUDED.committed_documents,
-    reserved_bytes = EXCLUDED.reserved_bytes,
-    reserved_documents = EXCLUDED.reserved_documents,
-    active_answers = EXCLUDED.active_answers,
-    updated_at = EXCLUDED.updated_at`
-	args := make([]any, 0, len(whereArgs)*7+1)
-	for range 5 {
-		args = append(args, whereArgs...)
+		for _, reservation := range uploads {
+			if err := tx.Model(&uploadReservation{}).Where("id = ? AND state = 'reserved' AND expires_at <= ?", reservation.ID, now).Updates(map[string]any{"state": "released", "released_at": now}).Error; err != nil {
+				return err
+			}
+		}
+
+		var answers []answerReservation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("owner_id = ? AND state = 'active' AND expires_at <= ?", owner, now).Find(&answers).Error; err != nil {
+			return err
+		}
+		for _, reservation := range answers {
+			if err := tx.Model(&answerReservation{}).Where("id = ? AND state = 'active' AND expires_at <= ?", reservation.ID, now).Updates(map[string]any{"state": "expired", "finished_at": now}).Error; err != nil {
+				return err
+			}
+		}
+
+		var usage struct {
+			CommittedBytes     int64
+			CommittedDocuments int
+			ReservedBytes      int64
+			ReservedDocuments  int
+			ActiveAnswers      int
+		}
+		if err := tx.Raw(`SELECT
+COALESCE((SELECT SUM(size) FROM documents WHERE owner_id = ?), 0) AS committed_bytes,
+COALESCE((SELECT COUNT(*) FROM documents WHERE owner_id = ?), 0) AS committed_documents,
+COALESCE((SELECT SUM(bytes) FROM upload_reservations WHERE owner_id = ? AND state = 'reserved'), 0) AS reserved_bytes,
+COALESCE((SELECT COUNT(*) FROM upload_reservations WHERE owner_id = ? AND state = 'reserved'), 0) AS reserved_documents,
+COALESCE((SELECT COUNT(*) FROM answer_reservations WHERE owner_id = ? AND state = 'active'), 0) AS active_answers`, owner, owner, owner, owner, owner).Scan(&usage).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&dbOwnerUsage{}).Where("owner_id = ?", owner).Updates(map[string]any{
+			"committed_bytes": usage.CommittedBytes, "committed_documents": usage.CommittedDocuments,
+			"reserved_bytes": usage.ReservedBytes, "reserved_documents": usage.ReservedDocuments,
+			"active_answers": usage.ActiveAnswers, "updated_at": now,
+		}).Error; err != nil {
+			return err
+		}
 	}
-	if ownerID != nil {
-		args = append(args, *ownerID, *ownerID)
-	}
-	args = append(args, now)
-	return tx.Exec(query, args...).Error
+	return nil
 }
 
 func (s *postgresDocumentStore) EndAnswer(ctx context.Context, reservationID, state string) error {
 	return s.database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var reservation answerReservation
 		if err := tx.Where("id = ?", reservationID).First(&reservation).Error; err != nil {
+			return err
+		}
+		if err := lockOwnerUsage(tx, reservation.OwnerID); err != nil {
+			return err
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", reservationID).First(&reservation).Error; err != nil {
 			return err
 		}
 		if reservation.State != "active" {
