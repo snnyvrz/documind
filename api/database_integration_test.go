@@ -37,7 +37,7 @@ func TestPostgresUpgradeRepairsDocumentForeignKeys(t *testing.T) {
 		t.Fatalf("create migration schema: %v", err)
 	}
 	defer database.Exec(`DROP SCHEMA ` + quoteIdentifier(schema) + ` CASCADE`)
-	if _, err := database.Exec(`SET search_path TO ` + quoteIdentifier(schema)); err != nil {
+	if _, err := database.Exec(`SET search_path TO ` + quoteIdentifier(schema) + `, public`); err != nil {
 		t.Fatalf("set migration search path: %v", err)
 	}
 
