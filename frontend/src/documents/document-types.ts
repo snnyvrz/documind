@@ -29,6 +29,8 @@ export type DocumentDetails = {
   nextAttemptAt?: string;
 };
 
+export type DocumentStatusDetails = Omit<DocumentDetails, "text">;
+
 export type QuestionHistoryItem = {
   id: string;
   documentId: string;

@@ -60,6 +60,17 @@ type documentSummary struct {
 	FailureKind string    `json:"failureKind,omitempty"`
 }
 
+type documentStatusResponse struct {
+	DocumentID    string     `json:"documentId"`
+	Filename      string     `json:"filename"`
+	Status        string     `json:"status"`
+	PageCount     uint32     `json:"pageCount"`
+	AttemptCount  int        `json:"attemptCount"`
+	NextAttemptAt *time.Time `json:"nextAttemptAt,omitempty"`
+	Error         *string    `json:"error,omitempty"`
+	FailureKind   string     `json:"failureKind,omitempty"`
+}
+
 func newDocumentHandler(uploadDirectory string, store documentStore, storages ...documentStorage) *documentHandler {
 	storage := documentStorage(newFilesystemStorage(uploadDirectory))
 	if len(storages) > 0 {
@@ -250,6 +261,23 @@ func (h *documentHandler) Get(c *echo.Context) error {
 		response["error"] = *document.ErrorMessage
 	}
 	return c.JSON(http.StatusOK, response)
+}
+
+func (h *documentHandler) Status(c *echo.Context) error {
+	document, err := h.store.FindStatusOwned(c.Request().Context(), principal(c), c.Param("id"))
+	if err != nil {
+		return c.JSON(http.StatusNotFound, map[string]string{"error": "document not found"})
+	}
+	return c.JSON(http.StatusOK, documentStatusResponse{
+		DocumentID:    document.ID,
+		Filename:      document.OriginalFilename,
+		Status:        document.Status,
+		PageCount:     document.PageCount,
+		AttemptCount:  document.AttemptCount,
+		NextAttemptAt: document.NextAttemptAt,
+		Error:         document.ErrorMessage,
+		FailureKind:   failureKindFor(document.Status, document.FailureKind),
+	})
 }
 
 func (h *documentHandler) Chunks(c *echo.Context) error {

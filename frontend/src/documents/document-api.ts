@@ -1,5 +1,5 @@
 import { apiFetch } from "@/lib/api";
-import type { DocumentDetails, DocumentListResponse, QuestionHistoryItem } from "@/documents/document-types";
+import type { DocumentDetails, DocumentListResponse, DocumentStatusDetails, QuestionHistoryItem } from "@/documents/document-types";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -44,4 +44,11 @@ export async function getDocument(documentId: string, signal: AbortSignal) {
   const body = (await response.json().catch(() => null)) as DocumentDetails | { error?: string } | null;
   if (!response.ok) throw new ApiError(body && "error" in body ? body.error ?? "Could not load document." : "Could not load document.", response.status);
   return body as DocumentDetails;
+}
+
+export async function getDocumentStatus(documentId: string, signal: AbortSignal) {
+  const response = await apiFetch(`/documents/${documentId}/status`, { signal });
+  const body = (await response.json().catch(() => null)) as DocumentStatusDetails | { error?: string } | null;
+  if (!response.ok) throw new ApiError(body && "error" in body ? body.error ?? "Could not load document status." : "Could not load document status.", response.status);
+  return body as DocumentStatusDetails;
 }

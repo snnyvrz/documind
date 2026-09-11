@@ -29,6 +29,7 @@ type documentStore interface {
 	DeleteOwned(context.Context, string, string) error
 	RetryOwned(context.Context, string, string) error
 	FindOwned(context.Context, string, string) (*document, error)
+	FindStatusOwned(context.Context, string, string) (*documentStatusRow, error)
 	ListChunksOwned(context.Context, string, string) ([]documentChunk, error)
 	SearchChunksOwned(context.Context, string, string, string, int) ([]documentChunk, error)
 	CreateQuestion(context.Context, documentQuestion) error
@@ -49,6 +50,17 @@ type documentSummaryRow struct {
 	FailureKind      string
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
+}
+
+type documentStatusRow struct {
+	ID               string
+	OriginalFilename string
+	Status           string
+	PageCount        uint32
+	ErrorMessage     *string
+	FailureKind      string
+	AttemptCount     int
+	NextAttemptAt    *time.Time
 }
 
 type quotaStore interface {
@@ -730,6 +742,18 @@ func (s *postgresDocumentStore) Find(ctx context.Context, id string) (*document,
 func (s *postgresDocumentStore) FindOwned(ctx context.Context, ownerID, id string) (*document, error) {
 	var result document
 	if err := s.database.WithContext(ctx).First(&result, "id = ? AND owner_id = ?", id, ownerID).Error; err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (s *postgresDocumentStore) FindStatusOwned(ctx context.Context, ownerID, id string) (*documentStatusRow, error) {
+	var result documentStatusRow
+	err := s.database.WithContext(ctx).Model(&document{}).
+		Select("id, original_filename, status, page_count, error_message, failure_kind, attempt_count, next_attempt_at").
+		Where("id = ? AND owner_id = ?", id, ownerID).
+		First(&result).Error
+	if err != nil {
 		return nil, err
 	}
 	return &result, nil

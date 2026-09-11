@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { ApiError, getDocument } from "@/documents/document-api";
-import type { DocumentDetails, ListedDocument } from "@/documents/document-types";
+import { ApiError, getDocumentStatus } from "@/documents/document-api";
+import type { DocumentStatusDetails, ListedDocument } from "@/documents/document-types";
 
 export function useDocumentProcessing(documents: ListedDocument[], documentId: string | null, refreshVersion = 0) {
-  const [detailsById, setDetailsById] = useState<Record<string, DocumentDetails>>({});
+  const [detailsById, setDetailsById] = useState<Record<string, DocumentStatusDetails>>({});
   const [errorsById, setErrorsById] = useState<Record<string, string>>({});
 
   const targetIds = documents
@@ -28,7 +28,7 @@ export function useDocumentProcessing(documents: ListedDocument[], documentId: s
       if (!immediate && document.hidden) return;
       if (!pollingIds.length) return;
 
-      const results = await Promise.allSettled(pollingIds.map((id) => getDocument(id, controller.signal)));
+      const results = await Promise.allSettled(pollingIds.map((id) => getDocumentStatus(id, controller.signal)));
       if (!active || controller.signal.aborted) return;
 
       const responses = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);

@@ -43,7 +43,7 @@ PDF processing is asynchronous:
    become `failed` after five attempts.
 9. Expired processing leases are reclaimed automatically, so a worker or API
    crash cannot leave a document permanently stuck in `processing`.
-10. The frontend polls `GET /documents/{id}` sequentially until processing finishes,
+10. The frontend polls `GET /documents/{id}/status` sequentially until processing finishes,
     and cancels polling when another document is selected.
 11. The frontend lists completed and in-progress documents, lets users reopen or
     delete previous documents, and asks questions about completed documents.
@@ -330,7 +330,7 @@ timestamps, and a processing error when applicable.
 ### Get document status
 
 ```http
-GET /documents/{documentId}
+GET /documents/{documentId}/status
 ```
 
 Queued response:
@@ -353,14 +353,15 @@ Completed response:
   "filename": "document.pdf",
   "status": "completed",
   "pageCount": 3,
-  "attemptCount": 1,
-  "text": "Extracted document text..."
+  "attemptCount": 1
 }
 ```
 
 Possible statuses are `queued`, `processing`, `completed`, and `failed`.
 `attemptCount` reports how many processing attempts have started, and
 `nextAttemptAt` is present while a retry is waiting for its backoff delay.
+The status response does not include extracted text. Use the chunks endpoint below
+when extracted content is needed.
 
 ### List extracted chunks
 

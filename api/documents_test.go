@@ -245,6 +245,22 @@ func (s *memoryDocumentStore) FindOwned(_ context.Context, ownerID, id string) (
 	return nil, gorm.ErrRecordNotFound
 }
 
+func (s *memoryDocumentStore) FindStatusOwned(_ context.Context, ownerID, id string) (*documentStatusRow, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for index := range s.documents {
+		document := s.documents[index]
+		if document.ID == id && (document.OwnerID == ownerID || document.OwnerID == "") {
+			return &documentStatusRow{
+				ID: document.ID, OriginalFilename: document.OriginalFilename, Status: document.Status,
+				PageCount: document.PageCount, ErrorMessage: document.ErrorMessage, FailureKind: document.FailureKind,
+				AttemptCount: document.AttemptCount, NextAttemptAt: document.NextAttemptAt,
+			}, nil
+		}
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
 func (s *memoryDocumentStore) SearchChunks(_ context.Context, _ string, _ string, _ int) ([]documentChunk, error) {
 	return nil, nil
 }
@@ -395,6 +411,30 @@ func TestGetDocument(t *testing.T) {
 	}
 	if body["attemptCount"] != float64(2) || body["nextAttemptAt"] == nil {
 		t.Fatalf("retry metadata = %+v", body)
+	}
+}
+
+func TestGetDocumentStatusOmitsExtractedText(t *testing.T) {
+	text := "extracted text"
+	store := &memoryDocumentStore{documents: []document{{ID: "document-id", OriginalFilename: "document.pdf", Status: "completed", ExtractedText: &text, PageCount: 3}}}
+	server := newServer(t.TempDir(), store)
+
+	request := httptest.NewRequest(http.MethodGet, "/documents/document-id/status", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["status"] != "completed" || body["pageCount"] != float64(3) {
+		t.Fatalf("response = %+v", body)
+	}
+	if _, ok := body["text"]; ok {
+		t.Fatalf("status response contains extracted text: %+v", body)
 	}
 }
 

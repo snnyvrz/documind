@@ -175,6 +175,7 @@ func newServerWithMetrics(uploadDirectory string, store documentStore, storage d
 	documents.Use(auth.middleware)
 	documents.POST("", handler.Upload)
 	documents.GET("", handler.List)
+	documents.GET("/:id/status", handler.Status)
 	documents.GET("/:id", handler.Get)
 	documents.GET("/:id/chunks", handler.Chunks)
 	documents.GET("/:id/file", handler.File)

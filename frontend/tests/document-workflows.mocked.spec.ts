@@ -80,10 +80,10 @@ test.describe("mocked API document workflows", () => {
       if (route.request().method() !== "GET") return route.continue();
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: documents, hasMore: false }) });
     });
-    await page.route("**/documents/missing-document", async (route) => {
+    await page.route("**/documents/missing-document/status", async (route) => {
       await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "Document not found." }) });
     });
-    await page.route("**/documents/available-document", async (route) => {
+    await page.route("**/documents/available-document/status", async (route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -117,7 +117,7 @@ test.describe("mocked API document workflows", () => {
         body: JSON.stringify({ documentId: "mock-document-id", status: "queued" }),
       });
     });
-    await page.route("**/documents/mock-document-id", async (route) => {
+    await page.route("**/documents/mock-document-id/status", async (route) => {
       await route.fulfill({
         contentType: "application/json",
            body: JSON.stringify({
@@ -125,7 +125,6 @@ test.describe("mocked API document workflows", () => {
              filename: "sample-document.pdf",
              status: "completed",
              pageCount: 2,
-             text: "Extracted text from the mocked document.",
         }),
       });
     });
@@ -189,8 +188,8 @@ test.describe("mocked API document workflows", () => {
       if (route.request().method() !== "GET") return route.continue();
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: documents, hasMore: false }) });
     });
-    await page.route(/\/documents\/(first-document|second-document)$/, async (route) => {
-      const document = documents.find((item) => route.request().url().endsWith(item.documentId));
+    await page.route(/\/documents\/(first-document|second-document)\/status$/, async (route) => {
+      const document = documents.find((item) => route.request().url().includes(`/${item.documentId}/status`));
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(document) });
     });
     await page.route(/\/documents\/(first-document|second-document)\/questions$/, async (route) => {
@@ -236,7 +235,7 @@ test.describe("mocked API document workflows", () => {
       retryRequested = true;
       await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ status: "queued" }) });
     });
-    await page.route("**/documents/failed-document", async (route) => {
+    await page.route("**/documents/failed-document/status", async (route) => {
       if (route.request().method() !== "GET") return route.continue();
       detailRequests += 1;
       const body = !retryRequested
@@ -270,15 +269,18 @@ test.describe("mocked API document workflows", () => {
       }
       await route.continue();
     });
+    await page.route("**/documents/document-to-delete/status", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ documentId: "document-to-delete", filename: "old-report.pdf", status: "completed", pageCount: 2 }),
+      });
+    });
     await page.route("**/documents/document-to-delete", async (route) => {
       if (route.request().method() === "DELETE") {
         await route.fulfill({ status: 204 });
         return;
       }
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify({ documentId: "document-to-delete", filename: "old-report.pdf", status: "completed", pageCount: 2 }),
-      });
+      await route.continue();
     });
 
     await page.goto("/");
